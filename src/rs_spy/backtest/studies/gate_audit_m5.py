@@ -14,10 +14,23 @@ docstring), and simulates next_state_long/next_state_short per symbol in
 isolation. It does NOT reproduce the real backtest's cross-symbol
 top_n_list/top_n_tradeable ranking or max_per_sector caps (backtest/
 engine_m5.py's run_m5_backtest does that) -- those can only ever make real
-trade opportunities MORE scarce than what this audit measures, never less.
-So this audit's counts are an upper bound on confluence opportunity, useful
-for "how rare is this, fundamentally" but not a substitute for an actual
-backtest run.
+trade opportunities MORE scarce than what this audit measures, never less,
+so on THAT axis this audit's DIP_ARMED/ENTRY_EVAL counts are an upper bound.
+
+But this audit does NOT call `watchlist.apply_trigger_bypass` -- 04 Sec6's
+exception that sends an already-QUALIFIED symbol straight to ENTRY_EVAL on
+a matching LONG_TRIGGER/SHORT_TRIGGER bar from the bias engine, bypassing
+DIP_ARMED entirely. `run_m5_backtest`'s real event loop does call it (see
+engine_m5.py). Confirmed directly against the real post-fix backtest run
+(IMPLEMENTATION.md's M7 section): a run that produced 0/128 symbols ever
+reaching long DIP_ARMED in THIS audit still produced 3 real LONG trades,
+all three entering exactly one bar after a LONG_TRIGGER fire -- i.e. 100%
+of realized trades used the bypass path this audit doesn't model. So on
+THIS axis, this audit's DIP_ARMED/ENTRY_EVAL counts are an UNDERcount of
+real reachability, not an upper bound -- the two omissions pull in opposite
+directions and neither should be read as a net bound on the real system.
+Only the per-gate and joint pass-rate numbers (which don't involve the
+watchlist state machine at all) are unaffected by either omission.
 """
 import pandas as pd
 
