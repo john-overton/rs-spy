@@ -3,6 +3,7 @@ indexed by trading date, for indicator/backtest consumption."""
 import duckdb
 import pandas as pd
 
+from rs_spy.data.resample import resample_ohlcv
 from rs_spy.data.session import filter_rth
 
 
@@ -41,3 +42,18 @@ def load_universe_minute_bars(
     con: duckdb.DuckDBPyConnection, symbols: list[str], rth_only: bool = True
 ) -> dict[str, pd.DataFrame]:
     return {sym: load_minute_bars(con, sym, rth_only=rth_only) for sym in symbols}
+
+
+def load_m5_bars(con: duckdb.DuckDBPyConnection, symbol: str, rth_only: bool = True) -> pd.DataFrame:
+    """True 5-minute bars, built by resampling the warehouse's raw 1-minute
+    bars (see data/resample.py for why this step exists -- the spec's "M5"
+    indicators are calibrated for 5-minute spacing, not the 1-minute bars
+    Alpaca actually returns)."""
+    m1 = load_minute_bars(con, symbol, rth_only=rth_only)
+    return resample_ohlcv(m1, "5min")
+
+
+def load_universe_m5_bars(
+    con: duckdb.DuckDBPyConnection, symbols: list[str], rth_only: bool = True
+) -> dict[str, pd.DataFrame]:
+    return {sym: load_m5_bars(con, sym, rth_only=rth_only) for sym in symbols}
