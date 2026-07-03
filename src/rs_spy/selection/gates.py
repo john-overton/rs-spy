@@ -16,8 +16,19 @@ def gate_price(df: pd.DataFrame, min_price: float = 10.0) -> pd.Series:
     return df["close"] >= min_price
 
 
-def gate_adv(df: pd.DataFrame, min_shares: float = 1_000_000, lookback: int = 20) -> pd.Series:
-    adv = df["volume"].rolling(lookback).mean()
+def gate_adv(
+    df: pd.DataFrame, min_shares: float = 1_000_000, lookback: int = 20,
+    adv: pd.Series | None = None,
+) -> pd.Series:
+    """`adv`, if given, is an already-computed ADV series (e.g. a
+    daily-cadence 20-day average aligned onto this df's own index) compared
+    directly against `min_shares`, bypassing the rolling-mean computation
+    entirely -- required at M5 cadence, where a rolling mean of `df`'s own
+    5-minute-bar volume is not a 20-day average. Without it, falls back to a
+    rolling(lookback) mean of `df["volume"]`, correct when `df` is itself
+    daily-cadence (the D1 walking-skeleton's usage)."""
+    if adv is None:
+        adv = df["volume"].rolling(lookback).mean()
     return adv >= min_shares
 
 
@@ -86,8 +97,9 @@ def gates_pass_long(
     min_headroom_atr: float = 1.0,
     min_rvol: float = 1.0,
     disabled: frozenset = frozenset(),
+    adv20: pd.Series | None = None,
 ) -> pd.Series:
-    result = gate_price(df, min_price) & gate_adv(df, min_adv_shares) & gate_earnings(
+    result = gate_price(df, min_price) & gate_adv(df, min_adv_shares, adv=adv20) & gate_earnings(
         df.index, earnings_blackout or set()
     )
     if "rrs" not in disabled:
@@ -113,8 +125,9 @@ def gates_pass_short(
     min_headroom_atr: float = 1.0,
     min_rvol: float = 1.0,
     disabled: frozenset = frozenset(),
+    adv20: pd.Series | None = None,
 ) -> pd.Series:
-    result = gate_price(df, min_price) & gate_adv(df, min_adv_shares) & gate_earnings(
+    result = gate_price(df, min_price) & gate_adv(df, min_adv_shares, adv=adv20) & gate_earnings(
         df.index, earnings_blackout or set()
     )
     if "rrs" not in disabled:
@@ -186,6 +199,7 @@ def gates_pass_long_m5(
     max_gap_pct: float = 0.20,
     use_qqq_crosscheck: bool = False,
     disabled: frozenset = frozenset(),
+    adv20: pd.Series | None = None,
 ) -> pd.Series:
     """Full 9-gate long-side check (G1-G9) at M5 cadence. `disabled` reuses
     HARD_RULE_NAMES plus "rrs_m5"/"vwap" for the M3.5-style ablation study
@@ -193,6 +207,7 @@ def gates_pass_long_m5(
     result = gates_pass_long(
         df, features, earnings_blackout, min_price, min_adv_shares,
         rrs_d1_threshold, "rolling_rrs_d1", min_ha_days, min_headroom_atr, min_rvol, disabled,
+        adv20=adv20,
     )
     if "rrs_m5" not in disabled:
         result &= gate_rrs_m5_long(features, rrs_m5_threshold)
@@ -219,10 +234,12 @@ def gates_pass_short_m5(
     max_gap_pct: float = 0.20,
     use_qqq_crosscheck: bool = False,
     disabled: frozenset = frozenset(),
+    adv20: pd.Series | None = None,
 ) -> pd.Series:
     result = gates_pass_short(
         df, features, earnings_blackout, min_price, min_adv_shares,
         rrs_d1_threshold, "rolling_rrs_d1", min_ha_days, min_headroom_atr, min_rvol, disabled,
+        adv20=adv20,
     )
     if "rrs_m5" not in disabled:
         result &= gate_rrs_m5_short(features, rrs_m5_threshold)
