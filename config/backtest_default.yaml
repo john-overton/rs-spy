@@ -1,0 +1,78 @@
+# Default thresholds from algo-spec/02-08, overridable per backtest run.
+# Values marked "initial calibration" in the specs -- treat as a starting
+# point for the sensitivity sweeps in 08 §3.3, not settled truth.
+
+rrs:
+  m5_window: 12          # bars, 02 §1.1
+  d1_window: 5            # bars
+  atr_h1_periods: 50
+  atr_d1_periods: 14
+  long_qualify_threshold: 1.0     # 02 §1.4
+  short_qualify_threshold: -1.0
+  pure_strength_threshold: 2.0
+  pure_strength_power_index_max: -1.5
+  d1_alignment_long: 0.5
+  d1_alignment_short: -0.5
+
+sma_stack:
+  periods: [50, 100, 200]
+
+heikin_ashi:
+  min_continuation_days: 2       # gate G4 / Rule 3
+
+headroom:
+  min_atr_multiple: 1.0
+  full_score_atr_multiple: 2.0
+  pivot_strength_bars: 5
+  lookback_sessions: 60
+
+laguerre_rsi:
+  gamma: 0.5
+  strong_threshold: 80
+  weak_threshold: 20
+
+volume:
+  rvol_qualify_min: 1.0            # 04 gate G7
+  rvol_full_score: 2.0
+  rvol_lookback_sessions: 20
+
+selection:
+  gate_min_price: 10.0
+  gate_min_adv_shares: 1_000_000
+  gate_min_adv_dollars: 25_000_000
+  gate_min_float_shares: 50_000_000
+  score_min_list: 50
+  score_min_hold: 40
+  tradeable_top_n: 5
+  list_top_n: 20
+  max_per_sector: 2
+  weights:                          # 04 §4, out of 100
+    w1_m5_rrs: 25
+    w2_d1_rrs: 20
+    w3_d1_chart_quality: 15
+    w4_divergence_bonus: 15
+    w5_volume: 10
+    w6_headroom: 10
+    w7_consistency: 5
+
+bias:
+  score_strong_bull: 60
+  score_bull: 25
+  score_bear: -25
+  score_strong_bear: -60
+  hysteresis_bars: 2
+  smoothing_ema_bars: 3
+
+risk:
+  risk_per_trade_pct: 0.005
+  max_concurrent_long: 5
+  max_concurrent_short: 3
+  daily_loss_limit_pct: -0.02
+  weekly_loss_limit_pct: -0.04
+  consecutive_stopouts_halt: 3
+  short_size_multiplier: 0.75
+
+backtest:
+  slippage_half_spread_bps: 0.0    # placeholder, see 08 §1 -- calibrate in M3.5/M7
+  slippage_extra_bps: 2.0
+  unfilled_cancel_bars: 2

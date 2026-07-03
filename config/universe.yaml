@@ -1,0 +1,159 @@
+# Curated ~130 symbol universe for phase-1 pipeline/algo validation.
+# Not the full 800-1500 symbol scan from algo-spec/01-data-requirements.md --
+# see algo-spec plan Open Risk #2 (survivorship bias) and #5 (reference data
+# is hand-maintained at this scale, see reference_overrides.yaml).
+#
+# Expanded from the original ~28-symbol M0-M3 universe after the M3.5
+# checkpoint (see IMPLEMENTATION.md "M3.5 status"): the D1 gate stack's joint
+# pass rate is ~0.83% of symbol-days, and 28 candidate symbols produced too
+# few qualifying symbol-days to ever coincide with a trigger/dip-arm event
+# over 5 years (0 trades). All symbols are long-listed liquid large/mid-caps
+# that existed continuously over the full backfill window (2021-07-05 to
+# present) to avoid new-listing gaps.
+
+benchmarks:
+  - symbol: SPY
+    role: primary
+  - symbol: QQQ
+    role: secondary
+
+universe:
+  # Technology (20)
+  - { symbol: AAPL,  sector: Technology }
+  - { symbol: MSFT,  sector: Technology }
+  - { symbol: NVDA,  sector: Technology }
+  - { symbol: AMD,   sector: Technology }
+  - { symbol: CRM,   sector: Technology }
+  - { symbol: ORCL,  sector: Technology }
+  - { symbol: ADBE,  sector: Technology }
+  - { symbol: INTC,  sector: Technology }
+  - { symbol: CSCO,  sector: Technology }
+  - { symbol: IBM,   sector: Technology }
+  - { symbol: QCOM,  sector: Technology }
+  - { symbol: TXN,   sector: Technology }
+  - { symbol: AVGO,  sector: Technology }
+  - { symbol: MU,    sector: Technology }
+  - { symbol: NOW,   sector: Technology }
+  - { symbol: INTU,  sector: Technology }
+  - { symbol: PANW,  sector: Technology }
+  - { symbol: ADI,   sector: Technology }
+  - { symbol: LRCX,  sector: Technology }
+  - { symbol: KLAC,  sector: Technology }
+  # Communication Services (12)
+  - { symbol: GOOGL, sector: Communication Services }
+  - { symbol: META,  sector: Communication Services }
+  - { symbol: NFLX,  sector: Communication Services }
+  - { symbol: DIS,   sector: Communication Services }
+  - { symbol: CMCSA, sector: Communication Services }
+  - { symbol: T,     sector: Communication Services }
+  - { symbol: VZ,    sector: Communication Services }
+  - { symbol: TMUS,  sector: Communication Services }
+  - { symbol: EA,    sector: Communication Services }
+  - { symbol: TTWO,  sector: Communication Services }
+  - { symbol: OMC,   sector: Communication Services }
+  - { symbol: CHTR,  sector: Communication Services }
+  # Consumer Discretionary (15)
+  - { symbol: AMZN,  sector: Consumer Discretionary }
+  - { symbol: TSLA,  sector: Consumer Discretionary }
+  - { symbol: HD,    sector: Consumer Discretionary }
+  - { symbol: NKE,   sector: Consumer Discretionary }
+  - { symbol: MCD,   sector: Consumer Discretionary }
+  - { symbol: SBUX,  sector: Consumer Discretionary }
+  - { symbol: LOW,   sector: Consumer Discretionary }
+  - { symbol: TJX,   sector: Consumer Discretionary }
+  - { symbol: BKNG,  sector: Consumer Discretionary }
+  - { symbol: MAR,   sector: Consumer Discretionary }
+  - { symbol: GM,    sector: Consumer Discretionary }
+  - { symbol: F,     sector: Consumer Discretionary }
+  - { symbol: TGT,   sector: Consumer Discretionary }
+  - { symbol: ROST,  sector: Consumer Discretionary }
+  - { symbol: YUM,   sector: Consumer Discretionary }
+  # Consumer Staples (10)
+  - { symbol: WMT,   sector: Consumer Staples }
+  - { symbol: PG,    sector: Consumer Staples }
+  - { symbol: KO,    sector: Consumer Staples }
+  - { symbol: PEP,   sector: Consumer Staples }
+  - { symbol: COST,  sector: Consumer Staples }
+  - { symbol: MDLZ,  sector: Consumer Staples }
+  - { symbol: CL,    sector: Consumer Staples }
+  - { symbol: KMB,   sector: Consumer Staples }
+  - { symbol: GIS,   sector: Consumer Staples }
+  - { symbol: STZ,   sector: Consumer Staples }
+  # Financials (15)
+  - { symbol: JPM,   sector: Financials }
+  - { symbol: BAC,   sector: Financials }
+  - { symbol: GS,    sector: Financials }
+  - { symbol: MS,    sector: Financials }
+  - { symbol: WFC,   sector: Financials }
+  - { symbol: C,     sector: Financials }
+  - { symbol: AXP,   sector: Financials }
+  - { symbol: BLK,   sector: Financials }
+  - { symbol: SCHW,  sector: Financials }
+  - { symbol: USB,   sector: Financials }
+  - { symbol: PNC,   sector: Financials }
+  - { symbol: TFC,   sector: Financials }
+  - { symbol: COF,   sector: Financials }
+  - { symbol: MET,   sector: Financials }
+  - { symbol: AIG,   sector: Financials }
+  # Healthcare (15)
+  - { symbol: UNH,   sector: Healthcare }
+  - { symbol: LLY,   sector: Healthcare }
+  - { symbol: JNJ,   sector: Healthcare }
+  - { symbol: PFE,   sector: Healthcare }
+  - { symbol: MRK,   sector: Healthcare }
+  - { symbol: ABBV,  sector: Healthcare }
+  - { symbol: TMO,   sector: Healthcare }
+  - { symbol: ABT,   sector: Healthcare }
+  - { symbol: DHR,   sector: Healthcare }
+  - { symbol: BMY,   sector: Healthcare }
+  - { symbol: AMGN,  sector: Healthcare }
+  - { symbol: GILD,  sector: Healthcare }
+  - { symbol: CVS,   sector: Healthcare }
+  - { symbol: MDT,   sector: Healthcare }
+  - { symbol: ISRG,  sector: Healthcare }
+  # Industrials (12)
+  - { symbol: CAT,   sector: Industrials }
+  - { symbol: BA,    sector: Industrials }
+  - { symbol: HON,   sector: Industrials }
+  - { symbol: GE,    sector: Industrials }
+  - { symbol: UPS,   sector: Industrials }
+  - { symbol: RTX,   sector: Industrials }
+  - { symbol: LMT,   sector: Industrials }
+  - { symbol: DE,    sector: Industrials }
+  - { symbol: MMM,   sector: Industrials }
+  - { symbol: UNP,   sector: Industrials }
+  - { symbol: FDX,   sector: Industrials }
+  - { symbol: EMR,   sector: Industrials }
+  # Energy (8)
+  - { symbol: XOM,   sector: Energy }
+  - { symbol: CVX,   sector: Energy }
+  - { symbol: COP,   sector: Energy }
+  - { symbol: SLB,   sector: Energy }
+  - { symbol: EOG,   sector: Energy }
+  - { symbol: PSX,   sector: Energy }
+  - { symbol: MPC,   sector: Energy }
+  - { symbol: OXY,   sector: Energy }
+  # Materials (7)
+  - { symbol: LIN,   sector: Materials }
+  - { symbol: APD,   sector: Materials }
+  - { symbol: ECL,   sector: Materials }
+  - { symbol: NEM,   sector: Materials }
+  - { symbol: FCX,   sector: Materials }
+  - { symbol: DD,    sector: Materials }
+  - { symbol: SHW,   sector: Materials }
+  # Utilities (7)
+  - { symbol: NEE,   sector: Utilities }
+  - { symbol: DUK,   sector: Utilities }
+  - { symbol: SO,    sector: Utilities }
+  - { symbol: D,     sector: Utilities }
+  - { symbol: AEP,   sector: Utilities }
+  - { symbol: EXC,   sector: Utilities }
+  - { symbol: SRE,   sector: Utilities }
+  # Real Estate (7)
+  - { symbol: PLD,   sector: Real Estate }
+  - { symbol: AMT,   sector: Real Estate }
+  - { symbol: EQIX,  sector: Real Estate }
+  - { symbol: PSA,   sector: Real Estate }
+  - { symbol: O,     sector: Real Estate }
+  - { symbol: SPG,   sector: Real Estate }
+  - { symbol: DLR,   sector: Real Estate }
