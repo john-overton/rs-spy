@@ -20,8 +20,11 @@ were never wrong, only date labels.
   engine (algo-spec 04) at true M5 cadence — complete (this checkpoint).**
   Engine functions only, unit tested; no backtest replay loop, no order
   execution, no position management (that's M6). See "M5:..." section below.
-- M6: M5-cadence event-driven backtest engine, long/short algo per
-  algo-spec 05/06/07 — **not started**.
+- **M6: M5-cadence event-driven backtest engine, long/short algo per
+  algo-spec 05/06/07 — complete (this checkpoint).** See "M6:..." section
+  below — the engine and algo code are built, unit tested (180 tests), and
+  reviewed, but a real-data run surfaced a blocking bug in shared indicator
+  code that currently prevents any real backtest results from existing yet.
 
 ## TL;DR
 
@@ -566,6 +569,208 @@ was first found) came back **"Ready to move to M6: Yes"**, no Critical or Import
 It flagged six Minor items worth M6's attention, folded into "Known limitations" below
 (items 12-15) rather than repeated here.
 
+## M6: event-driven M5 backtest engine + long/short algo
+
+Built the actual intraday round-trip system on top of M5's engine functions (8
+tasks, subagent-driven development against `docs/superpowers/plans/2026-07-03-m6-backtest-engine.md`,
+progress ledger at `.superpowers/sdd/progress.md`). **All code is written, unit
+tested (180 tests, up from 124 at the M5 checkpoint), and independently
+reviewed** — but the first real-data run (this task, Task 8) surfaced a
+blocking bug in shared indicator code that no synthetic test fixture ever
+exercised, so **no real M6 backtest trade metrics exist yet**. See "Real
+backtest run" below before assuming this milestone is validated against real
+data — it is not, yet.
+
+**What was built:**
+
+- `algo/risk.py` (Task 1) — position sizing (`position_size`, `cap_shares`),
+  ATR-based stop placement (`stop_price_long/short`), NEUTRAL-bias dynamic stop
+  tightening (`neutral_tighten_stop_long/short`), bias/score size multipliers,
+  and a `RiskManager` class enforcing daily/weekly loss limits and a
+  consecutive-stop-out entry halt (algo-spec 07 §1-4).
+- `backtest/broker_sim.py` (Task 2) — order-fill simulation: marketable-limit
+  entry pricing (`entry_limit_price`), next-bar fill logic (`try_fill_entry`),
+  and slippage (`apply_slippage`), matching 08 §1's fill/timing convention.
+- `algo/long.py` (Task 3) — long-side entry qualification
+  (`not_extended_long`, `confirm_trigger_entry_long` for Path A,
+  `dip_quality_pass_long` for Path B) and the full exit-signal series
+  (`rs_failure_long`, `vwap_loss_long`, `momentum_stall_long`,
+  `market_flip_exit_long`), per algo-spec 05 §2-4.
+- `algo/short.py` (Task 4) — the short-side mirror of Task 3
+  (`not_extended_short`, `confirm_trigger_entry_short`,
+  `bounce_quality_pass_short`, and the exit-signal series), plus
+  `squeeze_guard_short` (a short-only violent-adverse-move guard with no long
+  equivalent) and an intentionally unconditional `market_flip_exit_short` (no
+  `flip_flatten` confirmation gate, unlike the long side) — both asymmetries
+  are per algo-spec 06 §4's own design, not implementation gaps.
+- `backtest/engine_m5.py` (Tasks 5-6) — `_prepare_m5`/`PreparedM5`: the
+  per-symbol precompute layer, computing every feature/gate/score/exit-signal
+  on each symbol's own native M5 index before reindexing onto a shared master
+  calendar; `run_m5_backtest`/`BacktestConfigM5`/`PositionM5`/`TradeM5`/
+  `BacktestResultM5`: the actual bar-by-bar event loop — order submission,
+  fills, position management (all of 05 §4/06 §4's exit rules), risk-manager
+  gating, and the long/short watchlist state machine wiring. This is the real
+  intraday round-trip engine M5 was missing.
+- `scripts/run_backtest_intraday.py` (Task 7) — the CLI entry point: loads the
+  real warehouse (M1/M5/D1 bars for the full universe), runs
+  `run_m5_backtest`, prints 08 §2 metrics + exit-reason breakdown, writes
+  `reports/m5_backtest/trades.csv`/`equity_curve.csv`.
+- `data/loader.py::load_universe_m1_bars` (Task 7) — a thin wrapper/alias of
+  `load_universe_minute_bars`, named to match `load_universe_m5_bars`'s
+  convention for the backtest engine's call sites.
+
+**Real bugs found and fixed during the build** (all resolved, all reviewed,
+per `.superpowers/sdd/task-{1..7}-report.md` and `progress.md`):
+
+1. **Critical — SHORT-side fill condition used the wrong bar field
+   (Task 2).** `broker_sim.try_fill_entry`'s SHORT branch checked
+   `bar_low <= limit_price` (copy-pasted from the LONG branch) instead of
+   `bar_high >= limit_price`. A short sells into strength, so the bar must
+   trade *up* to the limit, not down — the bug produced phantom fills (a bar
+   whose high never reached the limit still "filled") and missed fills (a
+   fully marketable bar returned no fill at all). Found in code review, fixed
+   to match the brief's own correct reference code, verified with two new
+   regression tests reproducing both failure modes directly.
+2. **Important — a `chop_ratio` window workaround was a misdiagnosed fix,
+   not a real bug (Task 3).** The first implementation of
+   `dip_quality_pass_long` called `chop_ratio(df_m5, window=window-1)` after
+   observing the brief's own 6-bar test fixture return all-NaN at
+   `window=6` — but that NaN was purely a test-fixture artifact (a
+   `window`-bar fixture with zero prior trading history has no predecessor
+   bar for `overlap_ratio`'s internal `shift(1)` to compare against; real
+   production data always has real bars before any pullback window is
+   evaluated). The `window-1` change would have created a real, silent
+   production inconsistency: `bias/engine.py` already calls
+   `chop_ratio(spy_m5, window=CHOP_WINDOW)` with no such adjustment,
+   establishing this codebase's actual convention, and `-1` would have left
+   `dip_quality_pass_long`'s mixed-candle check covering only 5 of its own
+   declared 6-bar window while its other four sub-checks used the full 6.
+   Reverted the window-1 workaround; gave the test fixtures one real leading
+   warmup bar instead, matching how every other rolling-window indicator in
+   this codebase is exercised.
+3. **Important — zero test coverage of the precompute layer's #1 stated
+   risk invariant (Task 5).** `_prepare_m5`'s central correctness rule —
+   compute every per-symbol quantity on that symbol's own native M5 index
+   *first*, and only reindex the *finished* output onto the shared master
+   calendar *last* — had no test that actually exercised a genuinely gapped
+   native-vs-master calendar (the fixture's AAPL and SPY M5 indices were
+   bit-for-bit identical, making every `.reindex()` call a no-op). Fixed by
+   adding a real thin-symbol regression test (a synthetic "THIN" symbol
+   trading on only half the sessions, with an intra-session gap on the days
+   it does trade). Verified the test actually catches the violation it's
+   meant to catch by deliberately reintroducing the bug (reindexing before
+   computing) and confirming the new test fails — with a genuinely
+   informative failure mode: Wilder's ATR (`.ewm(adjust=False)`) doesn't
+   just leave the gap blank, it silently carries a stale-but-plausible ATR
+   value forward across the injected NaN gap.
+4. **Two Critical bugs in Task 6's own hand-written reference code (found
+   in review, not implementer error — this was the plan's highest-risk
+   task):**
+   - **Inverted trailing-stop clamp.** Algo-spec 05 §4.6/06 §4's literal
+     formula is `max(EMA8(M5) - 0.25×ATR, entry)` for LONG once the trail
+     trigger fires (mirrored with `min`/`+0.25` for SHORT). The code computed
+     `min(trail, entry)` for LONG and `max(trail, entry)` for SHORT — backwards.
+     The effect: the instant a trend extends far enough that `trail` first
+     exceeds `entry` (exactly the normal case this rule exists to handle),
+     the clamp discarded `trail` and substituted `entry`, permanently
+     freezing the stop at breakeven — the trailing stop could never advance
+     again no matter how far the trend ran. Fixed to match the spec's literal
+     formula; verified via bug-injection (temporarily reverted the fix,
+     confirmed the new regression test fails with the exit price landing at
+     breakeven instead of the ~4+ points above it the fixed code produces,
+     then restored the fix and confirmed the test passes).
+   - **`slots_free`/`slots_free_s` counted across both books combined.**
+     The available-entry-slot counters for the long and short books both used
+     `len(positions)` — *all* open positions regardless of direction —
+     instead of same-direction-only. With shorts enabled, an open LONG
+     position wrongly ate into the SHORT book's slot budget (and the mirror
+     bug the same for an open SHORT against the LONG book). Fixed by
+     filtering `positions.values()` by direction before counting; verified
+     via bug-injection the same way (reverted, confirmed a scripted
+     same-bar starvation scenario produces zero SHORT trades under the bug
+     and a real completed trade under the fix).
+
+**Disclosed, not fixed (deliberate simplifications, matching this project's
+document-don't-silently-approximate norm — full detail in the referenced
+modules' own docstrings):**
+
+- Algo-spec 07 §6's kill switches are not implemented — a live-trading-only
+  concern (halting new order submission on broker/data-feed errors), out of
+  scope for a historical backtest.
+- `algo/risk.py`'s stops are ATR-only (`stop_price_long/short`); 07 §3's
+  swing-low/swing-high alternative stop placement is not implemented.
+- `algo/long.py`/`algo/short.py` translate the spec's discretionary
+  dip/bounce-quality language ("healthy pullback," "wimpy bounce") into a
+  concrete indicator vocabulary (`chop_ratio`, `RVOL`, pullback depth in ATR,
+  `stacked_count`, VWAP-held) — a judgment call documented in each function's
+  own docstring, not a literal restatement of the spec's prose.
+- The same three M5-scoring simplifications carried over from the M5
+  checkpoint (W3's EMA8-pullback sub-bonus, W7's cross-sectional-tercile vs.
+  per-symbol formula, W4's missing flat/RRS≥2 alternate bonus path) and the
+  deferred news-halt anti-pattern exclusion are unchanged by M6 — see the M5
+  section above.
+
+**Real backtest run — a crash, not a result.** Per this task's own
+instructions, a genuine crash on real data is reported here rather than
+silently patched. `python scripts/run_backtest_intraday.py` (full scope: 128
+trade symbols + SPY/QQQ, full 5-year cached warehouse) fails immediately,
+before a single bar of the event loop runs:
+
+```
+pandas.errors.DataError: No numeric types to aggregate
+```
+
+raised from `indicators/candle_structure.py::chop_ratio`'s
+`overlap_ratio(df).rolling(window).mean()`, called from
+`bias/engine.py::compute_raw_score` on **SPY's own M5 data** — i.e. this
+crash happens inside the shared market-bias engine, before any per-symbol
+work even begins, so it is not scope-dependent in the way a slow run would
+be.
+
+**Root cause** (diagnosed, not guessed at, but intentionally *not* fixed in
+this documentation-only task): `overlap_ratio`'s
+`rng = (high - low).replace(0, pd.NA)` upcasts the whole Series from `float64`
+to `object` dtype the instant *any* bar in the input has an exact
+`high == low` (a zero-range bar). This is real, if uncommon, in actual market
+data — confirmed directly against the cached warehouse: **SPY's own 5-year M5
+history has 34 such bars** (e.g. `2021-11-26 18:40 UTC`, the half-day session
+after Thanksgiving; several isolated single-print bars in 2024-2025) — and
+never occurs in the hand-built synthetic OHLCV fixtures used throughout Tasks
+1-7's unit tests, which always vary price continuously. Once the Series is
+object-dtype (mixing native floats and pandas' `pd.NA` scalar),
+`chop_ratio`'s `.rolling(window).mean()` cannot operate on it at all and
+raises immediately.
+
+**This is not an isolated one-off.** To get *some* real evidence rather than
+none (per this task's instructions), a reduced-scope run was attempted next:
+10 liquid mega-cap symbols (AAPL, MSFT, GOOGL, AMZN, NVDA, META, JPM, UNH,
+XOM, HD) over a recent ~4-month window (2026-03-02 to 2026-06-30) deliberately
+chosen to avoid every one of SPY's 34 known zero-range dates (standalone
+script, not committed to the codebase:
+`.superpowers/sdd/task8_reduced_backtest.py`). **It crashed with the
+identical error**, this time triggered by one of the *traded* symbols' own M5
+data via `algo/long.py::dip_quality_pass_long`'s call to the same
+`chop_ratio`. `chop_ratio`/`overlap_ratio` is called from at least three
+places in the M5 pipeline (`bias/engine.py`'s shared candle-structure score
+component, `algo/long.py::dip_quality_pass_long`, and
+`algo/short.py::bounce_quality_pass_short`), each evaluated against every
+traded symbol's own M5 bars — meaning essentially any nontrivial real M5
+dataset, full-universe or reduced, is likely to hit a zero-range bar
+somewhere and trigger this crash. **No trade count, win rate, profit factor,
+or exit-reason breakdown exists for M6 yet** — neither run produced any
+output before crashing. This must be fixed before M7's validation studies (or
+any further real-data M6 run) can proceed; see "Known limitations" item 16
+below.
+
+Because this bug lives in shared indicator code (`indicators/candle_structure.py`,
+built at M2, unchanged since) rather than in any of Tasks 1-7's new M6 code,
+none of Tasks 1-7's own reviews had reason to catch it — every one of those
+reviews (and the 180 passing unit tests) verified logic against synthetic
+fixtures that structurally cannot produce a zero-range bar. This is the same
+class of "real data finds what synthetic fixtures can't" gap that M4/M5's own
+real-data runs surfaced (the timezone bug, the `gap_pct`/H1-resample bugs) —
+consistent with this project's track record, not a new kind of failure.
+
 ## Known limitations / open risks (unchanged from the plan except where noted)
 
 1. IEX vs. consolidated-tape data divergence -- see deviation #5 above; larger than "minor" for
@@ -633,27 +838,87 @@ It flagged six Minor items worth M6's attention, folded into "Known limitations"
     the same result for liquid symbols (SPY/QQQ) -- confirmed not a bug or inconsistency during the
     final whole-branch review -- but a future reader could mistake this for drift and "fix" one to
     match the other. Worth a one-line code comment noting the equivalence explicitly.
+16. **Blocking: `indicators/candle_structure.py::overlap_ratio`/`chop_ratio` crashes on any real
+    M5 dataset containing a zero-range (`high == low`) bar** -- see the M6 section above for the
+    full root cause and reproduction (confirmed on both the full 128-symbol/5-year run and a
+    reduced 10-symbol/4-month run, via two different call sites). `rng = (high -
+    low).replace(0, pd.NA)` upcasts to `object` dtype the instant one such bar exists, and the
+    downstream `.rolling(window).mean()` cannot handle it. This is used from `bias/engine.py`
+    (shared bias score), `algo/long.py::dip_quality_pass_long`, and
+    `algo/short.py::bounce_quality_pass_short` -- i.e. it blocks the entire M6 backtest from
+    producing any result against real data. **No M6 trade metrics exist yet as a result.** Needs
+    a real fix (e.g. keeping `rng` as `float64` with `np.nan` instead of `pd.NA`, or an explicit
+    `.astype(float)` after the `replace`) before any further real-data M6 run or M7 validation
+    study can proceed. Deliberately not fixed in this documentation-only task per its own
+    instructions.
+17. 07 §6's kill switches (broker/data-feed-error entry halts) are not implemented -- a
+    live-trading-only concern, does not apply to historical backtesting, not planned for any
+    future milestone unless live trading is pursued.
+18. `algo/risk.py`'s stop placement is ATR-only (`stop_price_long/short`) -- 07 §3's
+    swing-low/swing-high alternative stop is not implemented. Worth revisiting once real trade
+    data exists (post item #16's fix) to see whether ATR-only stops are getting run over by
+    structure the swing-based alternative would have avoided.
+19. `algo/long.py`/`algo/short.py`'s dip/bounce-quality functions
+    (`dip_quality_pass_long`/`bounce_quality_pass_short`) are a documented translation of the
+    spec's discretionary language ("healthy pullback," "wimpy bounce") into a concrete indicator
+    vocabulary (chop ratio, RVOL, ATR-scaled depth, stacked-candle count, VWAP-held) -- a judgment
+    call, not a literal restatement of 05 §3/06 §3's prose. See each function's own docstring.
+20. **The identical inverted-trailing-stop-clamp bug found and fixed in `backtest/engine_m5.py`
+    during Task 6 (see M6 section above) also exists in the pre-existing D1 engine
+    (`backtest/engine.py`, ~L279-283)** -- this is in fact where the M6 reference code's copy of
+    the bug originated from, believed at the time to be matching established, working precedent.
+    Flagged during Task 6's review as out of scope to fix there (separate review history, D1
+    milestone already closed); still open. Needs its own follow-up fix -- the D1 backtest's
+    trailing-stop behavior on any trade that ran far enough to trip the trail trigger has been
+    silently freezing at breakeven this whole time, the same way the M6 bug did before its fix.
+21. **A narrow, untested `slots_free` mirror-direction scenario remains open** (Task 6's
+    fix-round review, non-blocking). The fix for the cross-book slot-miscounting bug (M6 section
+    above) is applied symmetrically to both `slots_free` and `slots_free_s` and is believed
+    correct either way, but a claim made during the fix that the *mirrored* starvation direction
+    (an open SHORT position starving the LONG book) is "provably unreachable" was found by the
+    reviewer to be overstated: a thin/gappy symbol with a NaN bar landing on the exact bias-flip
+    bar is a real, if narrow, path to that same starvation pattern in the other direction. No
+    dedicated regression test exists for this scenario yet -- worth picking up in M7 or a future
+    hardening pass.
+22. `tests/integration/test_run_backtest_intraday_script.py` never actually invokes
+    `scripts/run_backtest_intraday.py`'s `main()` directly -- it re-implements the script's wiring
+    inline instead, so a typo introduced directly in the script file would not be caught by the
+    test suite. Minor, pre-existing in the Task 7 brief, not an implementer fault; not blocking,
+    but worth tightening before relying on this test as a safety net for script-level changes.
 
-## Next: M6 (event-driven M5 backtest engine + long/short algo)
+## Next: M7 (full validation study suite + reporting)
 
-Full M5 market-bias and stock-selection engines exist now, are unit tested (124 tests), and are
-documented above (see "M5:..." section) — but nothing wires them into a real backtest yet. M6
-hasn't been scoped in detail (worth doing explicitly with the user before starting, the same way
-M5 was), but the high-level remaining work is:
+M6's engine and algo code are built, unit tested (180 tests), and reviewed -- but item #16 above
+(the `chop_ratio`/`overlap_ratio` zero-range-bar crash) currently blocks any real backtest results
+from existing. **That fix is the necessary first step of M7**, not a nice-to-have: none of the
+studies below can produce meaningful output without a real M6 trade log to study.
 
-- An M5-cadence, event-driven backtest engine (`backtest/` or a new module) that replays real
-  intraday bars bar-by-bar, unlike `backtest/engine.py`'s D1 day-loop — this is the actual
-  intraday round-trip the spec describes ("at least 5 really good trades throughout the day"),
-  which the D1 skeleton could never produce (see deviation #8 in the D1 section above).
-- The long algo (algo-spec 05) and short algo (algo-spec 06): entry sequencing off
-  `bias/engine.py`'s `trigger`/`flip_flatten` outputs and `selection/watchlist.py`'s state machine,
-  position sizing/risk (a real `algo/risk.py`, replacing the D1 skeleton's inline
-  fixed-fractional sizing — known limitation #4 above), and the full exit stack (hard stop,
-  bias-flip flattening — `flip_flatten` is currently signal-only, RRS failure, profit-take,
-  trailing stop, VWAP-loss exit) per 05 §4/06 §4.
-- Position management / order execution (algo-spec 07) — currently nothing exists in `algo/`
-  (still an empty package).
-- The §7 scheduled-event entry blackout (known limitation #11 above) needs to be wired in as an
-  entry gate once real entries are being evaluated.
-- Once a real M5 backtest can run, revisit the M5 RRS window default (`RRS_M5_WINDOW=12`, known
-  limitation #6 above) with the same sensitivity-sweep methodology M3.5 used at D1 cadence.
+Once real M6 trades exist, M7's job is algo-spec 08 §3's full validation study suite, run at true
+M5 cadence (the D1-cadence versions of these same studies were already built and run during
+M3.5 -- see `backtest/studies/` and the "M3.5 status"/"Universe expansion" sections above for that
+precedent and its real findings):
+
+- **Rule-count ablation (08 §3.1)** -- extend `backtest/studies/ablation.py` to disable each M5
+  hard gate/rule individually (not just the D1 set of {bias, rrs, ha, sma}) and check whether
+  trade frequency responds; M3.5's D1 version found this uninformative (no single ablated rule
+  unlocked a new trade) -- worth checking whether the fuller M5 gate set behaves differently.
+- **Walk-away analysis (08 §3.2)** -- extend `backtest/studies/walk_away.py` to M5 cadence:
+  MFE/MAE per `IDLE -> QUALIFIED` entry signal vs. realized trade R, the same comparison that
+  found a real MFE/realized-R gap at D1 cadence (mean MFE ~1.9R vs. realized ~-0.11R).
+- **RRS parameter sensitivity (08 §3.3)** -- extend `backtest/studies/rrs_sensitivity.py` to sweep
+  `RRS_M5_WINDOW` (currently 12, per spec value L=12) the same way M3.5 swept `RRS_D1_WINDOW` and
+  found a real, consistent `window=3` improvement over the D1 default of 5 (known limitation #6
+  above) -- worth knowing whether the M5 window has a similar miscalibration.
+- **Bias-engine confusion matrix (08 §3.4)** -- not yet built at any cadence; a new
+  `backtest/studies/` module comparing `bias/engine.py`'s bucketed bias calls against realized
+  forward price direction.
+- **Time-of-day / regime slicing (08 §3.5)** -- not yet built at any cadence; a new
+  `backtest/studies/` module slicing trade outcomes by time-of-day (open/mid-day/close) and by
+  `regime_d1`/`regime_d1_m5` (TREND_UP/CHOP/TREND_DOWN), extending the same pattern
+  `ablation.py`/`walk_away.py`/`rrs_sensitivity.py` established at M3.5.
+- A `scripts/run_validation_studies.py` (the full 08 suite, M5 cadence) to replace/supersede
+  `scripts/run_validation_studies_m35.py`, the same relationship `run_backtest_intraday.py` has to
+  `run_backtest_d1.py`.
+- Once M7's studies are running on real M6 trades, revisit known limitations #18 (ATR-only stops),
+  #19 (dip/bounce-quality proxy), and #21 (untested slots_free mirror scenario) with real evidence
+  instead of a priori judgment calls.
