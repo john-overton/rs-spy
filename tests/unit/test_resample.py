@@ -62,6 +62,39 @@ def test_align_causal_forward_fills_without_lookahead():
     assert result.iloc[3] == 3.0  # past 16:00, knows the latest
 
 
+def test_resample_ohlcv_closed_right_fixes_hour_boundary_misattribution():
+    # Regression test: resample_ohlcv's output (e.g. M5 bars) is
+    # close-labeled -- a bar timestamped 10:00 represents the interval
+    # [09:55, 10:00), i.e. it belongs to the hour ENDING at 10:00, not the
+    # hour starting at 10:00. Re-resampling such already-close-labeled data
+    # up to H1 with the default closed="left" mis-buckets that boundary bar
+    # into the NEXT hour. closed="right" fixes it.
+    #
+    # Build 5-min bars where every bar up to and including 10:00 has price
+    # 1.0 (belongs to the 09:00-10:00 hour) and every bar after 10:00 has
+    # price 2.0 (belongs to the 10:00-11:00 hour).
+    index = pd.date_range("2024-06-03 09:35", "2024-06-03 11:00", freq="5min", tz="UTC")
+    price = np.where(index <= pd.Timestamp("2024-06-03 10:00", tz="UTC"), 1.0, 2.0)
+    m5 = pd.DataFrame(
+        {"open": price, "high": price, "low": price, "close": price, "volume": np.full(len(index), 100.0)},
+        index=index,
+    )
+
+    h1_buggy = resample_ohlcv(m5, "1h")  # default closed="left"
+    h1_fixed = resample_ohlcv(m5, "1h", closed="right")
+
+    # Buggy (closed="left"): the 10:00 bar (price 1.0, truly part of the
+    # 09:00-10:00 hour) leaks into the [10:00,11:00) bucket, contaminating
+    # its "open" (first bar) with the previous hour's price.
+    second_bucket_buggy = h1_buggy.loc[pd.Timestamp("2024-06-03 11:00", tz="UTC")]
+    assert second_bucket_buggy["open"] == 1.0  # demonstrates the misattribution
+
+    # Fixed (closed="right"): the 10:00 bar correctly lands in the
+    # (09:00,10:00] bucket, so the second hour's "open" is untainted.
+    second_bucket_fixed = h1_fixed.loc[pd.Timestamp("2024-06-03 11:00", tz="UTC")]
+    assert second_bucket_fixed["open"] == 2.0  # correct hour attribution
+
+
 def test_align_daily_to_intraday_uses_prior_session_by_default():
     daily = pd.Series([10.0, 20.0, 30.0], index=pd.to_datetime(["2024-06-03", "2024-06-04", "2024-06-05"]))
     intraday_index = pd.to_datetime(["2024-06-04 14:00", "2024-06-05 14:00"], utc=True)

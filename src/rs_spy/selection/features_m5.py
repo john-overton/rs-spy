@@ -33,7 +33,6 @@ consumed as a gate in selection/gates.py.
 import numpy as np
 import pandas as pd
 
-from rs_spy.bias.daily_context import daily_context_series
 from rs_spy.data.resample import align_causal, align_daily_to_intraday, resample_ohlcv
 from rs_spy.indicators.atr import atr as atr_fn
 from rs_spy.indicators.laguerre_rsi import laguerre_rsi
@@ -58,7 +57,13 @@ def _close_label(m1_series: pd.Series) -> pd.Series:
 
 
 def _h1_atr_aligned(df_m5: pd.DataFrame, h1_atr_period: int, target_index: pd.DatetimeIndex) -> pd.Series:
-    h1 = resample_ohlcv(df_m5, "1h")
+    # df_m5 is already close-labeled (resample_ohlcv's own output convention
+    # -- see this module's docstring), so re-resampling it up to H1 must use
+    # closed="right" (not the default closed="left"): a bar timestamped
+    # exactly on the hour represents the interval ENDING at that hour, and
+    # closed="right" buckets as (left, right], grouping it into the hour it
+    # actually belongs to instead of leaking it into the next hour's bucket.
+    h1 = resample_ohlcv(df_m5, "1h", closed="right")
     h1_atr = atr_fn(h1, n=h1_atr_period)
     return align_causal(h1_atr, target_index)
 
@@ -101,8 +106,11 @@ def compute_symbol_features_m5(
         {col: align_daily_to_intraday(d1_feat[col], df_m5.index) for col in d1_feat.columns}
     )
 
-    daily_ctx = daily_context_series(spy_d1)
-    prior_close = align_daily_to_intraday(daily_ctx["d1_close"], df_m5.index)
+    # gap_pct (04 §3's "gap > 20% at open" anti-pattern) is the SYMBOL's own
+    # overnight gap, not its gap relative to SPY -- so prior_close must come
+    # from the stock's own D1 close (d1_aligned["close"], already shift=1
+    # aligned via align_daily_to_intraday), not from SPY's daily_context_series.
+    prior_close = d1_aligned["close"]
     session = df_m5.index.normalize()
     session_open = df_m5["open"].groupby(session).transform("first")
     gap_pct = (session_open - prior_close) / prior_close

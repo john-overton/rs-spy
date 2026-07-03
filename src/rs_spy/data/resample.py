@@ -21,15 +21,25 @@ import pandas as pd
 _OHLCV_AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
 
 
-def resample_ohlcv(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+def resample_ohlcv(df: pd.DataFrame, freq: str, closed: str = "left") -> pd.DataFrame:
     """Aggregate OHLCV bars up to a coarser `freq` (pandas offset alias, e.g.
     "5min", "1h"). Buckets are labeled by their right (close) edge -- e.g.
     resample_ohlcv(m1, "5min") on RTH data starting 09:30 produces a bar
     labeled 09:35 covering [09:30, 09:35). Buckets with zero source bars
     (market closed overnight, or a coverage gap in a thin symbol's minute
-    data) are dropped rather than left as a NaN row."""
+    data) are dropped rather than left as a NaN row.
+
+    `closed` controls which side of each bucket is inclusive and defaults to
+    "left" (bucket = [left, right)), which is correct when `df` is
+    open-labeled source data -- e.g. raw M1 bars, whose own timestamp is a
+    bar's start, being resampled up to M5. Pass `closed="right"` (bucket =
+    (left, right]) when `df` is itself already close-labeled -- e.g.
+    resampling this function's own M5 output up to H1 -- so a source bar
+    timestamped exactly on a bucket boundary (representing the interval
+    ENDING at that timestamp) is grouped into the bucket it actually
+    belongs to rather than the next one."""
     cols = list(_OHLCV_AGG)
-    agg = df[cols].resample(freq, label="right", closed="left").agg(_OHLCV_AGG)
+    agg = df[cols].resample(freq, label="right", closed=closed).agg(_OHLCV_AGG)
     return agg.dropna(subset=["open"])
 
 
