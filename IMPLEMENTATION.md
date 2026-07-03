@@ -2,8 +2,8 @@
 
 Status snapshot for resuming work. Specs live in `algo-spec/` (the *what/why*);
 this document is the *what's actually built* (the *how*, and where it
-deviates from spec). Written at the M4 checkpoint, updated at the M5
-checkpoint. Read "Critical: a real timezone bug affected all data before
+deviates from spec). Written at the M4 checkpoint, updated at the M5 and M6
+checkpoints. Read "Critical: a real timezone bug affected all data before
 this point" before trusting any date in an earlier report (trade dates,
 trigger dates, etc.) — the underlying OHLCV values and all numeric results
 were never wrong, only date labels.
@@ -23,8 +23,10 @@ were never wrong, only date labels.
 - **M6: M5-cadence event-driven backtest engine, long/short algo per
   algo-spec 05/06/07 — complete (this checkpoint).** See "M6:..." section
   below — the engine and algo code are built, unit tested (180 tests), and
-  reviewed, but a real-data run surfaced a blocking bug in shared indicator
-  code that currently prevents any real backtest results from existing yet.
+  reviewed. Two real crashes found on real data are fixed; the real backtest
+  now runs end-to-end and produces a real (if thin) result: 0 trades over
+  1252 trading days / 128 symbols, root-caused (not just reported) via
+  direct gate-pass-rate/watchlist-state inspection.
 
 ## TL;DR
 
@@ -51,8 +53,20 @@ engine (`selection/gates.py`/`scoring.py` extensions, `selection/watchlist.py`
 LRSI dip-arm + trigger bypass). Found and fixed five real bugs during the
 build (see "M5:..." section below) — most notably a genuine 1-minute
 lookahead leak in the M1-to-M5 alignment path. **124 tests passing, lint
-clean.** Full M5-cadence backtest engine and position management are **not
-started** — that's M6.
+clean** at the M5 checkpoint. **M6 built the actual M5-cadence backtest
+engine and long/short algo** (risk sizing, order-fill simulation,
+entry/exit logic, the bar-by-bar event loop — 180 tests total) and, after
+fixing two more real bugs that only real market data exposed (a `pd.NA`
+dtype-upcast crash in shared candle-structure code, and a QQQ/SPY M5
+index-misalignment crash in the bias engine), ran the real thing end-to-end
+against the full 128-symbol/5-year warehouse: **0 trades over 1252 trading
+days.** Root-caused, not just reported — direct inspection (the same method
+M3.5 used at D1) found bias and the trigger both behave plausibly (BULL
+38.86% of bars, `LONG_TRIGGER` fires 1,591 times in 5 years), but the joint
+pass rate across the full 9-gate M5 selection stack is 0.00-0.02% of bars
+even for large, liquid names — a more severe version of the same
+gate-confluence rarity M3.5 found and fixed by expanding the D1 universe,
+now the lead item for M7. See "M6:..." below for the full diagnosis.
 
 ## Critical: a real timezone bug affected all data before this point
 
@@ -575,11 +589,14 @@ Built the actual intraday round-trip system on top of M5's engine functions (8
 tasks, subagent-driven development against `docs/superpowers/plans/2026-07-03-m6-backtest-engine.md`,
 progress ledger at `.superpowers/sdd/progress.md`). **All code is written, unit
 tested (180 tests, up from 124 at the M5 checkpoint), and independently
-reviewed** — but the first real-data run (this task, Task 8) surfaced a
-blocking bug in shared indicator code that no synthetic test fixture ever
-exercised, so **no real M6 backtest trade metrics exist yet**. See "Real
-backtest run" below before assuming this milestone is validated against real
-data — it is not, yet.
+reviewed.** Two real, blocking crashes were found and fixed running the first
+real-data backtests (see "Real bugs found and fixed" below); with both fixed,
+**a real, complete M6 backtest now runs end-to-end against the full cached
+warehouse and produces a result: 0 trades over 1252 trading days.** See "Real
+backtest run" below for the full result and a root-cause diagnosis of the
+zero-trade outcome, done the same way this project root-caused D1's original
+0-trade result at M3.5 (direct inspection of gate pass rates and trigger fire
+counts, not assumption).
 
 **What was built:**
 
@@ -689,6 +706,56 @@ per `.superpowers/sdd/task-{1..7}-report.md` and `progress.md`):
      via bug-injection the same way (reverted, confirmed a scripted
      same-bar starvation scenario produces zero SHORT trades under the bug
      and a real completed trade under the fix).
+5. **Critical — `body_pct`/`overlap_ratio` (`indicators/candle_structure.py`)
+   silently upcast a float64 Series to object dtype on any real zero-range
+   (`high == low`) M5 bar, crashing the first full-scope real-data run
+   (`commit c4fc237`).** Both functions guarded their division-by-zero case
+   with `rng.replace(0, pd.NA)`. `pd.NA` cannot be held in a numpy `float64`
+   array, so replacing even a single zero with `pd.NA` silently upcasts the
+   *whole* Series to `object` dtype — `np.nan` does not have this problem.
+   Once object-dtype, `chop_ratio`'s `.rolling(window).mean()` (called from
+   `bias/engine.py`'s shared candle-structure score component,
+   `algo/long.py::dip_quality_pass_long`, and
+   `algo/short.py::bounce_quality_pass_short`) crashes immediately with
+   `pandas.errors.DataError: No numeric types to aggregate`. This is real, if
+   uncommon, in actual market data — confirmed directly against the cached
+   warehouse: SPY's own 5-year M5 history has 34 such bars (e.g. the
+   half-day session after Thanksgiving 2021, several isolated single-print
+   bars in 2024-2025) — and never occurs in the hand-built synthetic OHLCV
+   fixtures used throughout Tasks 1-7's unit tests, which always vary price
+   continuously. It crashed both the full 128-symbol/5-year run and an
+   earlier reduced-scope 10-symbol/~4-month run (a different call site: the
+   reduced run's crash came from `algo/long.py::dip_quality_pass_long` on a
+   traded symbol's own bars, not from SPY). Fixed by using `np.nan` instead
+   of `pd.NA` in both places, keeping the Series `float64` throughout; a
+   regression test with a real zero-range-bar fixture verifies `body_pct`,
+   `overlap_ratio`, `chop_ratio`, and `stacked_count` all stay
+   float64/non-object, don't raise, and correctly produce `NaN` (not `0`/
+   `inf`) at the zero-range bar's own row while other rows stay finite —
+   verified against the pre-fix code to confirm it reproduces the original
+   crash.
+6. **Critical — `compute_raw_score`'s c8 (QQQ-agreement) component assumed
+   QQQ and SPY's M5 bar indices were identical, crashing on real market data
+   (`commit 4cc9a44`).** `bias/engine.py::compute_raw_score` computed
+   `qqq_diff_pct` from `qqq_m5["close"]` directly, without reindexing it onto
+   `spy_m5.index` the way `qqq_vwap` already was via `align_causal`. In every
+   synthetic fixture used throughout Tasks 1-8's unit tests, QQQ and SPY's M5
+   indices happened to be bit-for-bit identical, so this was never exercised.
+   Real QQQ/SPY M5 bar indices differ (each can be missing bars the other
+   has, on Alpaca's IEX-only feed), so the raw subtraction auto-aligned onto
+   the *union* of both indices, desyncing `qqq_above` from `spy_above`, and
+   `spy_above == qqq_above` raised `ValueError: Can only compare
+   identically-labeled Series objects` the instant the two symbols' indices
+   diverged — which happens fast across 5 years of real data. This resolves
+   the known-limitation item flagged in M5's own final review (see item 14
+   below, now closed): "`bias/engine.py`'s docstring documents `qqq_m5` must
+   share `spy_m5`'s index, but nothing enforces this at runtime." Fixed by
+   explicitly `.reindex(spy_m5.index)`-ing `qqq_m5["close"]` before the
+   subtraction (the same pattern `selection/features_m5.py`'s
+   `spy_close_aligned` already used) — a strict reindex, no `.ffill()`, so a
+   `spy_m5` bar QQQ has no native bar for now correctly reads as "QQQ
+   disagrees" (`qqq_above=False` from the NaN comparison) rather than
+   crashing or silently defaulting to "agrees."
 
 **Disclosed, not fixed (deliberate simplifications, matching this project's
 document-don't-silently-approximate norm — full detail in the referenced
@@ -710,66 +777,141 @@ modules' own docstrings):**
   deferred news-halt anti-pattern exclusion are unchanged by M6 — see the M5
   section above.
 
-**Real backtest run — a crash, not a result.** Per this task's own
-instructions, a genuine crash on real data is reported here rather than
-silently patched. `python scripts/run_backtest_intraday.py` (full scope: 128
-trade symbols + SPY/QQQ, full 5-year cached warehouse) fails immediately,
-before a single bar of the event loop runs:
+**Real backtest run — a real result: 0 trades.** The two crashes above
+(`c4fc237`, `4cc9a44`) blocked every real-data run until both were fixed. With
+both fixed, `python scripts/run_backtest_intraday.py` now runs end-to-end
+against the full cached warehouse (128 trade symbols + SPY/QQQ, full
+5-year/1252-trading-day window, ~97,257 M5 bars) without crashing. Full scope
+precompute + backtest took **~15-16 minutes wall-clock** in this run (started
+~14:16, finished ~14:32) — useful concrete data for anyone wondering, in a
+future run, whether the process has hung. Raw output:
 
 ```
-pandas.errors.DataError: No numeric types to aggregate
+Running M5 backtest: 128 symbols, shorts_enabled=False
+
+0 trades over 1252 trading days
+  n_trades: 0
+  win_rate: None
+  profit_factor: None
+  avg_win: None
+  avg_loss: None
+  avg_win_loss_ratio: None
+  max_drawdown_pct: 0.0
+  trades_per_day: 0.0
+  total_pnl: 0.0
+
+Wrote trade log to reports/m5_backtest/trades.csv
 ```
 
-raised from `indicators/candle_structure.py::chop_ratio`'s
-`overlap_ratio(df).rolling(window).mean()`, called from
-`bias/engine.py::compute_raw_score` on **SPY's own M5 data** — i.e. this
-crash happens inside the shared market-bias engine, before any per-symbol
-work even begins, so it is not scope-dependent in the way a slow run would
-be.
+`reports/m5_backtest/equity_curve.csv` has 97,257 rows (matches the expected
+M5 bar count: 1252 days x ~78 bars/day). `reports/m5_backtest/trades.csv` has
+only a header row — genuinely zero fills, not a reporting artifact.
 
-**Root cause** (diagnosed, not guessed at, but intentionally *not* fixed in
-this documentation-only task): `overlap_ratio`'s
-`rng = (high - low).replace(0, pd.NA)` upcasts the whole Series from `float64`
-to `object` dtype the instant *any* bar in the input has an exact
-`high == low` (a zero-range bar). This is real, if uncommon, in actual market
-data — confirmed directly against the cached warehouse: **SPY's own 5-year M5
-history has 34 such bars** (e.g. `2021-11-26 18:40 UTC`, the half-day session
-after Thanksgiving; several isolated single-print bars in 2024-2025) — and
-never occurs in the hand-built synthetic OHLCV fixtures used throughout Tasks
-1-7's unit tests, which always vary price continuously. Once the Series is
-object-dtype (mixing native floats and pandas' `pd.NA` scalar),
-`chop_ratio`'s `.rolling(window).mean()` cannot operate on it at all and
-raises immediately.
+**Root-caused before treating this as either "nothing works" or "fine, ship
+it"** — following this project's own M3.5 precedent (see that section above),
+which found D1's original 0-trade result was a sample-size/gate-confluence-
+rarity problem, not a bug, only after directly inspecting gate pass rates and
+the trigger's fire count. Did the same here: a standalone diagnostic script
+(`.superpowers/sdd/task9_diagnostic.py`, not committed to the codebase),
+using `rs_spy.backtest.engine_m5._prepare_m5` directly to reuse every
+already-computed gate/score/feature series rather than recomputing by hand,
+against real cached data for 7 large, liquid, actively-covered symbols
+(AAPL, MSFT, NVDA, AMD, JPM, XOM, UNH) over the full 5-year window
+(~97,256 M5 bars each):
 
-**This is not an isolated one-off.** To get *some* real evidence rather than
-none (per this task's instructions), a reduced-scope run was attempted next:
-10 liquid mega-cap symbols (AAPL, MSFT, GOOGL, AMZN, NVDA, META, JPM, UNH,
-XOM, HD) over a recent ~4-month window (2026-03-02 to 2026-06-30) deliberately
-chosen to avoid every one of SPY's 34 known zero-range dates (standalone
-script, not committed to the codebase:
-`.superpowers/sdd/task8_reduced_backtest.py`). **It crashed with the
-identical error**, this time triggered by one of the *traded* symbols' own M5
-data via `algo/long.py::dip_quality_pass_long`'s call to the same
-`chop_ratio`. `chop_ratio`/`overlap_ratio` is called from at least three
-places in the M5 pipeline (`bias/engine.py`'s shared candle-structure score
-component, `algo/long.py::dip_quality_pass_long`, and
-`algo/short.py::bounce_quality_pass_short`), each evaluated against every
-traded symbol's own M5 bars — meaning essentially any nontrivial real M5
-dataset, full-universe or reduced, is likely to hit a zero-range bar
-somewhere and trigger this crash. **No trade count, win rate, profit factor,
-or exit-reason breakdown exists for M6 yet** — neither run produced any
-output before crashing. This must be fixed before M7's validation studies (or
-any further real-data M6 run) can proceed; see "Known limitations" item 16
-below.
+- **Bias reaches BULL territory plenty — it is not the bottleneck.** SPY's
+  bias bucket reads BULL/STRONG_BULL 38.86% of all M5 bars (37,795/97,256),
+  and holds for the actual 05 §1.2 long precondition — >=2 consecutive bars,
+  `bias_ok_long` in `engine_m5.py` — 35.94% of the time (34,952/97,256). Not
+  stuck in NEUTRAL/CHOP.
+- **The trigger fires often, not rarely — also not the bottleneck.**
+  `LONG_TRIGGER` fires 1,591 times and `SHORT_TRIGGER` 561 times over the
+  5-year window (vs. D1's SPY trendline trigger firing only 19 times in the
+  same window at M3.5) — an order of magnitude more opportunities for a
+  trigger-day direct-entry (04 §6) than the D1 skeleton ever had.
+- **The real bottleneck is the same "rare confluence" shape M3.5 found at
+  D1, now with more simultaneous gates required.** Per-symbol M5 gate pass
+  rates (isolated, on each symbol's own native calendar, `gates_pass_long_m5`'s
+  9-gate set) across the 7 sampled symbols:
 
-Because this bug lives in shared indicator code (`indicators/candle_structure.py`,
-built at M2, unchanged since) rather than in any of Tasks 1-7's new M6 code,
-none of Tasks 1-7's own reviews had reason to catch it — every one of those
-reviews (and the 180 passing unit tests) verified logic against synthetic
-fixtures that structurally cannot produce a zero-range bar. This is the same
-class of "real data finds what synthetic fixtures can't" gap that M4/M5's own
-real-data runs surfaced (the timezone bug, the `gap_pct`/H1-resample bugs) —
-consistent with this project's track record, not a new kind of failure.
+  | gate | AAPL | MSFT | NVDA | AMD | JPM | XOM | UNH |
+  |---|---|---|---|---|---|---|---|
+  | price>=$10 | 100% | 100% | 100% | 100% | 100% | 100% | 100% |
+  | ADV (M5-cadence, see below) | 1.79% | 0.12% | 56.21% | 0.66% | 0.02% | 0.00% | 0.03% |
+  | rrs_d1>=1 | 11.85% | 11.77% | 16.53% | 15.16% | 17.56% | 27.34% | 22.61% |
+  | ha_cont_d1>=2 | 21.51% | 20.86% | 24.51% | 21.03% | 25.21% | 24.62% | 19.42% |
+  | sma_stack=ABOVE_ALL | 40.74% | 35.63% | 50.32% | 31.26% | 53.39% | 44.16% | 27.95% |
+  | headroom_long | 49.18% | 49.08% | 49.51% | 61.56% | 48.12% | 43.95% | 48.56% |
+  | volume_ratio_d1>=1 | 39.73% | 40.78% | 40.97% | 40.13% | 40.82% | 40.14% | 38.79% |
+  | rrs_m5>=1 | 3.93% | 3.34% | 3.79% | 4.30% | 4.62% | 7.81% | 7.61% |
+  | vwap (close>vwap_m5) | 51.47% | 51.00% | 52.87% | 50.34% | 52.34% | 52.04% | 50.80% |
+  | not_one_candle_wonder | 31.77% | 31.93% | 32.38% | 32.13% | 32.39% | 33.15% | 32.52% |
+  | no_gap_exclusion | 99.92% | 99.92% | 99.84% | 99.84% | 99.92% | 99.92% | 99.92% |
+  | **JOINT (all 9)** | **0.00%** (0) | **0.00%** (0) | **0.00%** (4) | **0.02%** (15) | **0.00%** (0) | **0.00%** (0) | **0.00%** (0) |
+
+  No single gate is an outright always-fail wall the way, say, a
+  miscalibrated threshold would produce — `rrs_m5` is the most restrictive at
+  3.3-7.8%, but every other gate passes at least ~20-50% of the time in
+  isolation. Requiring all 9 simultaneously (the same "Keeping It Really
+  Simple" confluence-by-design philosophy M3.5 found at D1, now with 9 hard
+  gates instead of 7) drives the joint pass rate to **0.00-0.02% of M5
+  bars** across every symbol tested — 0 to 15 bars out of ~97,000 per symbol
+  over 5 years.
+- **A genuine, specific miscalibration found along the way, but confirmed
+  NOT to be the dominant cause:** `gate_adv` (G1, the liquidity/"average
+  daily volume" gate) is fed `df_m5_native` — the symbol's own M5 bars — by
+  `_prepare_m5`, so its `df["volume"].rolling(20).mean()` computes a rolling
+  ~100-minute (20 M5-bar) average of *5-minute-bar* volume, not a genuine
+  20-*day* average daily volume, even though `_prepare_m5` already computes a
+  correct daily-cadence ADV series (`adv20_native`, used elsewhere for
+  `risk.cap_shares`'s position-sizing cap) that the gate never uses. This
+  produces wildly inconsistent, cadence-confused pass rates across
+  comparably liquid names (0.00% for XOM, 0.02% for JPM, vs. 56.21% for
+  NVDA) rather than a sensible, roughly-uniform liquidity screen. However,
+  ADV isn't in `HARD_RULE_NAMES`'s ablatable set, so its exact contribution
+  was checked by hand: ANDing every *other* gate together (excluding ADV)
+  still only reaches 0.00-0.02% jointly (4-23 bars per symbol) — barely
+  different from the 9-gate joint rate above. **The ADV gate's cadence
+  mismatch is real and worth fixing, but the other 8 gates' confluence
+  alone already drives the joint rate to the same negligible level** — this
+  is not a single-gate miscalibration story, it's a many-gates-at-once
+  story. See "Known limitations" item 16 below for the actionable follow-up.
+- **Watchlist state machine confirms the gate-confluence story directly, not
+  just implies it.** Simulating `next_state_long` bar-by-bar (same config as
+  the real backtest) for all 7 sampled symbols over the full 5-year window:
+  6 of 7 (AAPL, MSFT, NVDA, JPM, XOM, UNH) never left `IDLE` even once. AMD
+  reached `QUALIFIED` for 15 bars total but never reached `DIP_ARMED` or
+  `ENTRY_EVAL`: `next_state_long` only advances `QUALIFIED -> DIP_ARMED` on
+  an RRS/LRSI cross *while gates are still passing on that same bar*
+  (`holds = gate_pass and score_ok`), and AMD's isolated few-bar
+  gate-passing windows never happened to coincide with a dip-arm crossing.
+  This is the M5-cadence analog of M3.5's own finding ("of the 19 real
+  trigger days, only 1 had even a single qualified/entry-eval symbol, and
+  that one still didn't convert to a trade") — direct confirmation that the
+  bottleneck is confluence rarity all the way through the pipeline, not a
+  single broken stage.
+
+**Interpretation: this looks like the same sample-size/confluence-rarity
+story M3.5 found at D1, not a new thesis-breaking result — but it is a more
+severe version of it.** At D1, 130 symbols x ~0.83% daily joint-gate pass
+rate produced 4 trades in 5 years. At M5, the sampled joint pass rate is
+1-2 orders of magnitude smaller (0.00-0.02% of *bars*, on a calendar with
+~78x more bars per trading day than D1 has rows), across a comparably-sized
+128-symbol universe. That is consistent with 0 trades without implying the
+M5 engine logic itself is broken (bias reaches bull territory correctly,
+the trigger fires plausibly often, the gates each pass individually at
+sane, non-degenerate rates) — but it also means the M3.5 lesson ("expand the
+universe, the signal is probably real but under-sampled") may not be enough
+on its own at M5 cadence, since the joint-pass-rate gap versus D1 is much
+larger than the ~4.6x universe expansion that fixed D1's 0-trade result.
+This diagnostic only covered 7 of 128 symbols (a deliberate scope reduction
+per this task's own instructions — the full 128-symbol precompute is slow);
+the pattern was completely consistent across every symbol sampled, but a
+full-universe version of this same gate-pass-rate/watchlist-state audit
+(extending `backtest/studies/ablation.py` past the D1-only {bias, rrs, ha,
+sma} set it currently ablates, per Known limitation #5) is real, concrete,
+un-started M7 work, not yet done here — see "Known limitations" item 16 and
+"Next: M7" below.
 
 ## Known limitations / open risks (unchanged from the plan except where noted)
 
@@ -826,11 +968,12 @@ consistent with this project's track record, not a new kind of failure.
     so an overnight gap enters true-range/pivot-detection math like any other bar-to-bar move. Not
     wrong, and internally consistent with the D1 precedent, but a genuine intraday subtlety worth
     M6 knowing about before trusting trigger/breach sensitivity right around a session's open.
-14. **`bias/engine.py`'s docstring documents `qqq_m5` must share `spy_m5`'s index, but nothing
-    enforces this at runtime** -- unlike D1 daily bars (which always share a trading calendar),
-    intraday SPY/QQQ M5 indices can in principle diverge on a coverage gap. Both are highly liquid
-    so the practical risk is low, but M6's real pipeline wiring should add an explicit alignment
-    step/assertion rather than relying on the docstring precondition alone.
+14. ~~`bias/engine.py`'s docstring documents `qqq_m5` must share `spy_m5`'s index, but nothing
+    enforces this at runtime`~~ **RESOLVED (`commit 4cc9a44`).** This was not just a theoretical
+    risk -- it crashed the real M6 backtest (`ValueError: Can only compare identically-labeled
+    Series objects`) the first time it was run against 5 years of real QQQ/SPY M5 data. Fixed by
+    explicitly reindexing `qqq_m5["close"]` onto `spy_m5.index` before use in c8. See the M6
+    section's "real bugs found and fixed" list above for full detail.
 15. Two different RVOL computation paths exist in the M5 code and are correct-but-worth-noting:
     `features_m5.py` computes RVOL on 1-minute bars then aligns onto M5 (per 02 §3/4's literal
     "1-min bars" language), while `bias/engine.py` computes it directly on M5 bars. Because
@@ -838,19 +981,28 @@ consistent with this project's track record, not a new kind of failure.
     the same result for liquid symbols (SPY/QQQ) -- confirmed not a bug or inconsistency during the
     final whole-branch review -- but a future reader could mistake this for drift and "fix" one to
     match the other. Worth a one-line code comment noting the equivalence explicitly.
-16. **Blocking: `indicators/candle_structure.py::overlap_ratio`/`chop_ratio` crashes on any real
-    M5 dataset containing a zero-range (`high == low`) bar** -- see the M6 section above for the
-    full root cause and reproduction (confirmed on both the full 128-symbol/5-year run and a
-    reduced 10-symbol/4-month run, via two different call sites). `rng = (high -
-    low).replace(0, pd.NA)` upcasts to `object` dtype the instant one such bar exists, and the
-    downstream `.rolling(window).mean()` cannot handle it. This is used from `bias/engine.py`
-    (shared bias score), `algo/long.py::dip_quality_pass_long`, and
-    `algo/short.py::bounce_quality_pass_short` -- i.e. it blocks the entire M6 backtest from
-    producing any result against real data. **No M6 trade metrics exist yet as a result.** Needs
-    a real fix (e.g. keeping `rng` as `float64` with `np.nan` instead of `pd.NA`, or an explicit
-    `.astype(float)` after the `replace`) before any further real-data M6 run or M7 validation
-    study can proceed. Deliberately not fixed in this documentation-only task per its own
-    instructions.
+16. ~~Blocking: `indicators/candle_structure.py::overlap_ratio`/`chop_ratio` crashes on any real
+    M5 dataset containing a zero-range (`high == low`) bar~~ **RESOLVED (`commit c4fc237`)** -- see
+    the M6 section's "real bugs found and fixed" list above for full detail. With this and item 14
+    both fixed, the real M6 backtest now runs end-to-end and produces a real result: **0 trades
+    over 1252 trading days, 128 symbols** (see "Real backtest run" in the M6 section above).
+    **New, specific, actionable finding for M7, in place of this now-resolved item:** the
+    diagnostic behind that 0-trade result found `gates.py::gate_adv` (G1, the liquidity/"ADV"
+    gate) is fed M5-cadence bars by `_prepare_m5` -- its `df["volume"].rolling(20).mean()` computes
+    a rolling ~100-minute (20 M5-bar) average of 5-minute-bar volume, not a genuine 20-*day*
+    average daily volume, even though `_prepare_m5` already computes a correct daily-cadence ADV
+    series (`adv20_native`) for `risk.cap_shares`'s position-sizing cap that the gate itself never
+    uses. Confirmed via a 7-symbol/5-year sample: this produces wildly inconsistent pass rates
+    across comparably-liquid names (0.00% XOM, 0.02% JPM, 56.21% NVDA) instead of a sensible,
+    roughly-uniform liquidity screen -- a real miscalibration, worth fixing before M7 draws
+    conclusions from any gate-ablation study that includes G1. **However, checked directly and
+    confirmed this is not the dominant cause of the 0-trade result**: ANDing every other M5 gate
+    together (excluding ADV) still only reaches a 0.00-0.02% joint pass rate per symbol (4-23 bars
+    out of ~97,000, barely different from the full 9-gate rate) -- the same many-gates-simultaneously
+    confluence rarity M3.5 found at D1 is the dominant story here, not this one gate. See "Real
+    backtest run" in the M6 section above for the full per-gate breakdown and the watchlist-state
+    confirmation (6 of 7 sampled symbols never left `IDLE`, the 7th reached `QUALIFIED` but never
+    `DIP_ARMED`/`ENTRY_EVAL`, over the full 5-year window).
 17. 07 §6's kill switches (broker/data-feed-error entry halts) are not implemented -- a
     live-trading-only concern, does not apply to historical backtesting, not planned for any
     future milestone unless live trading is pursued.
@@ -888,15 +1040,35 @@ consistent with this project's track record, not a new kind of failure.
 
 ## Next: M7 (full validation study suite + reporting)
 
-M6's engine and algo code are built, unit tested (180 tests), and reviewed -- but item #16 above
-(the `chop_ratio`/`overlap_ratio` zero-range-bar crash) currently blocks any real backtest results
-from existing. **That fix is the necessary first step of M7**, not a nice-to-have: none of the
-studies below can produce meaningful output without a real M6 trade log to study.
+M6's engine and algo code are built, unit tested (180 tests), reviewed, and now confirmed to run
+end-to-end against real data (both blocking crashes from item #16/#14 above are fixed). But the
+real result is **0 trades over 1252 trading days / 128 symbols** -- the same shape of problem M3.5
+hit at D1 (see that section above), just apparently more severe at M5 cadence per the diagnostic in
+the M6 section above (0.00-0.02% joint gate-pass rate across every sampled symbol, vs. D1's
+~0.83%). **Getting M6 to produce a non-trivial trade log is now M7's necessary first step**, not a
+nice-to-have: none of the validation studies below can produce meaningful output studying an empty
+trade log, the same conclusion M3.5 reached before it expanded the D1 universe from 28 to 130
+symbols. Concretely, before running the studies below, M7 should:
 
-Once real M6 trades exist, M7's job is algo-spec 08 §3's full validation study suite, run at true
-M5 cadence (the D1-cadence versions of these same studies were already built and run during
-M3.5 -- see `backtest/studies/` and the "M3.5 status"/"Universe expansion" sections above for that
-precedent and its real findings):
+- Extend the diagnostic done for this task (`.superpowers/sdd/task9_diagnostic.py`, not committed)
+  into a proper, committed gate-pass-rate/watchlist-state audit across the full 128-symbol
+  universe (not just the 7-symbol sample used here) to confirm the confluence-rarity finding
+  generalizes, the same way M3.5's universe-expansion step reconfirmed its own diagnosis at scale.
+- Fix known limitation #16's ADV-gate cadence mismatch (`gate_adv` should consume the
+  already-computed `adv20_native` daily-cadence series, not raw M5-bar volume) -- confirmed not the
+  dominant cause of 0 trades, but a real miscalibration worth fixing on its own merits before it
+  contaminates any ablation study that includes G1.
+- Only then decide whether the M3.5 playbook (expand the universe further, e.g. toward the real
+  spec's 800-1,500-symbol scan) is the right next lever, or whether the M5 gate/threshold set
+  itself (9 hard gates vs. D1's 7, several inherited as-is from D1 without an M5-specific
+  recalibration pass) needs loosening first -- the joint-pass-rate gap vs. D1 is much larger than
+  the ~4.6x universe expansion that fixed D1's 0-trade result, so universe expansion alone may not
+  be enough this time.
+
+Once a real, non-trivial M6 trade log exists, M7's job is algo-spec 08 §3's full validation study
+suite, run at true M5 cadence (the D1-cadence versions of these same studies were already built and
+run during M3.5 -- see `backtest/studies/` and the "M3.5 status"/"Universe expansion" sections
+above for that precedent and its real findings):
 
 - **Rule-count ablation (08 §3.1)** -- extend `backtest/studies/ablation.py` to disable each M5
   hard gate/rule individually (not just the D1 set of {bias, rrs, ha, sma}) and check whether
