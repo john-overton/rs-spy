@@ -2,7 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rs_spy.indicators.candle_structure import follow_through, overlap_ratio, stacked_count
+from rs_spy.indicators.candle_structure import (
+    body_pct,
+    chop_ratio,
+    follow_through,
+    overlap_ratio,
+    stacked_count,
+)
 
 # Hand-computed golden fixture. volume_ratio_d1 uses lookback=2 (small, for
 # testability): avg_vol[t] = mean(volume[t-2], volume[t-1]).
@@ -67,3 +73,54 @@ def test_follow_through_false_when_insufficient_future_history():
     df = _df()
     volume_ratio = pd.Series([np.nan] * len(df))
     assert follow_through(df, breakout_idx=6, volume_ratio=volume_ratio, n_sessions=3) is False
+
+
+# Regression fixture for a real zero-range bar (open == high == low == close),
+# a legitimate market condition confirmed in real cached SPY M5 data (34 such
+# bars in 5 years of history, e.g. a single trade printing at one exact price
+# for the whole window during an illiquid period). idx2 below is such a bar.
+# `.replace(0, pd.NA)` (the pre-fix code) silently upcasts the whole Series to
+# object dtype the moment it hits a zero-range bar, which later breaks
+# `chop_ratio`'s `.rolling(window).mean()` with
+# `pandas.errors.DataError: No numeric types to aggregate`.
+_ZERO_RANGE_ROWS = [
+    (10.0, 12.0, 10.0, 11.0, 100),
+    (11.0, 13.0, 11.0, 12.5, 150),
+    (12.5, 12.5, 12.5, 12.5, 200),  # zero-range bar: high == low (== open == close)
+    (12.5, 14.0, 12.0, 13.5, 180),
+    (13.5, 15.0, 13.0, 14.5, 150),
+    (14.5, 16.0, 14.0, 15.5, 300),
+]
+
+
+def _zero_range_df():
+    return pd.DataFrame(_ZERO_RANGE_ROWS, columns=["open", "high", "low", "close", "volume"])
+
+
+def test_zero_range_bar_does_not_upcast_to_object_dtype():
+    """A real high==low bar must not silently upcast these Series to object
+    dtype (pd.NA does this; np.nan does not), and must not crash downstream
+    rolling aggregations. The zero-range bar's own row should be NaN
+    (division-by-zero guarded), while other rows stay finite and unaffected."""
+    df = _zero_range_df()
+
+    bp = body_pct(df)
+    orat = overlap_ratio(df)
+    chop = chop_ratio(df)
+    stacked = stacked_count(df, min_body_pct=0.6, min_volume_ratio=1.2, volume_lookback=2)
+
+    # dtype must stay numeric float64, never fall back to object.
+    assert bp.dtype == np.float64, bp.dtype
+    assert orat.dtype == np.float64, orat.dtype
+    assert chop.dtype == np.float64, chop.dtype
+    assert stacked.dtype != object, stacked.dtype
+
+    # The zero-range bar (idx2) is division-by-zero guarded -> NaN, not 0/inf.
+    assert np.isnan(bp.iloc[2])
+    assert np.isnan(orat.iloc[2])
+
+    # Other rows are unaffected and produce valid finite values.
+    for i in (0, 1, 3, 4, 5):
+        assert np.isfinite(bp.iloc[i]), f"body_pct row {i} should be finite"
+    for i in (1, 3, 4, 5):
+        assert np.isfinite(orat.iloc[i]), f"overlap_ratio row {i} should be finite"

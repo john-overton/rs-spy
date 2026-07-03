@@ -7,6 +7,7 @@ the full time-of-day-adjusted RVOL from `indicators/rvol.py` (M5, built in
 M5 milestone), and the chop window defaults to 5 sessions rather than 12 bars.
 This is a documented simplification, not a faithful D1 mirror of the M5 spec.
 """
+import numpy as np
 import pandas as pd
 
 
@@ -17,7 +18,7 @@ def volume_ratio_d1(df: pd.DataFrame, lookback: int = 20) -> pd.Series:
 
 def body_pct(df: pd.DataFrame) -> pd.Series:
     rng = df["high"] - df["low"]
-    return (df["close"] - df["open"]).abs() / rng.replace(0, pd.NA)
+    return (df["close"] - df["open"]).abs() / rng.replace(0, np.nan)
 
 
 def stacked_count(
@@ -63,7 +64,7 @@ def overlap_ratio(df: pd.DataFrame) -> pd.Series:
         pd.concat([high, prev_high], axis=1).min(axis=1, skipna=False)
         - pd.concat([low, prev_low], axis=1).max(axis=1, skipna=False)
     ).clip(lower=0)
-    rng = (high - low).replace(0, pd.NA)
+    rng = (high - low).replace(0, np.nan)
     return intersection / rng
 
 
