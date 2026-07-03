@@ -601,3 +601,50 @@ def test_slots_free_short_book_not_starved_by_open_long_positions(monkeypatch):
         "never have counted against -- slots_free_s must count only SHORT positions/pending orders"
     )
     assert (short_trades["symbol"] == "SHT").all()
+
+
+def test_prepare_m5_honors_rrs_m5_threshold_config(universe):
+    loose = BacktestConfigM5(rrs_m5_threshold_long=-100.0)  # impossible to fail
+    strict = BacktestConfigM5(rrs_m5_threshold_long=100.0)  # impossible to pass
+    prepared_loose = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=loose,
+    )
+    prepared_strict = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=strict,
+    )
+    # A threshold of -100 on the RRS gate can never fail (rolling_rrs_m5 is always >= -100);
+    # a threshold of +100 can never pass. If the config field isn't actually threaded through,
+    # both runs would produce identical (default-threshold) gate_long series.
+    assert prepared_loose.gate_long["AAPL"].sum() >= prepared_strict.gate_long["AAPL"].sum()
+    assert not prepared_strict.gate_long["AAPL"].any()
+
+
+def test_prepare_m5_honors_rrs_d1_threshold_config_both_directions(universe):
+    strict_long = BacktestConfigM5(rrs_d1_threshold_long=100.0)
+    strict_short = BacktestConfigM5(shorts_enabled=True, rrs_d1_threshold_short=-100.0)
+    prepared_long = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"]}, universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]}, spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"],
+        spy_d1=universe["spy_d1"], qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"}, config=strict_long,
+    )
+    prepared_short = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"]}, universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]}, spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"],
+        spy_d1=universe["spy_d1"], qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"}, config=strict_short,
+    )
+    assert not prepared_long.gate_long["AAPL"].any()
+    assert not prepared_short.gate_short["AAPL"].any()

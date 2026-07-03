@@ -59,6 +59,10 @@ class BacktestConfigM5:
     disabled_gates: frozenset = field(default_factory=frozenset)
     rrs_m5_window: int = RRS_M5_WINDOW
     use_qqq_crosscheck: bool = False
+    rrs_m5_threshold_long: float = 1.0
+    rrs_m5_threshold_short: float = -1.0
+    rrs_d1_threshold_long: float = 1.0
+    rrs_d1_threshold_short: float = -1.0
     max_entries_per_symbol_long: int = 2
     max_entries_per_symbol_short: int = 1
     expected_hold_minutes: float = 120.0
@@ -138,6 +142,8 @@ def _prepare_m5(
         gl_native = gates.gates_pass_long_m5(
             df_m5_native, feat_native, earnings_blackout.get(sym),
             min_adv_shares=config.min_adv_shares,
+            rrs_m5_threshold=config.rrs_m5_threshold_long,
+            rrs_d1_threshold=config.rrs_d1_threshold_long,
             use_qqq_crosscheck=config.use_qqq_crosscheck,
             disabled=config.disabled_gates,
             adv20=adv20_native,
@@ -145,6 +151,8 @@ def _prepare_m5(
         gs_native = gates.gates_pass_short_m5(
             df_m5_native, feat_native, earnings_blackout.get(sym),
             min_adv_shares=config.min_adv_shares,
+            rrs_m5_threshold=config.rrs_m5_threshold_short,
+            rrs_d1_threshold=config.rrs_d1_threshold_short,
             use_qqq_crosscheck=config.use_qqq_crosscheck,
             disabled=config.disabled_gates,
             adv20=adv20_native,
