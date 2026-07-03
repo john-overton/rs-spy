@@ -140,12 +140,14 @@ def _prepare_m5(
             min_adv_shares=config.min_adv_shares,
             use_qqq_crosscheck=config.use_qqq_crosscheck,
             disabled=config.disabled_gates,
+            adv20=adv20_native,
         ).fillna(False)
         gs_native = gates.gates_pass_short_m5(
             df_m5_native, feat_native, earnings_blackout.get(sym),
             min_adv_shares=config.min_adv_shares,
             use_qqq_crosscheck=config.use_qqq_crosscheck,
             disabled=config.disabled_gates,
+            adv20=adv20_native,
         ).fillna(False)
         sl_native = scoring.score_long_m5(feat_native)
         ss_native = scoring.score_short_m5(feat_native)
