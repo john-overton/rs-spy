@@ -397,7 +397,7 @@ def run_m5_backtest(
                 if pos.peak_favorable >= long_algo.TRAIL_TRIGGER_ATR_MULT * pos.entry_atr and not pd.isna(atr):
                     e8 = prepared.ema8[sym].iat[i]
                     trail = e8 - long_algo.TRAIL_STOP_ATR_MULT * atr
-                    pos.stop = max(pos.stop, min(trail, pos.entry_price))
+                    pos.stop = max(pos.stop, max(trail, pos.entry_price))
                 if time_now >= TIME_FLAT:
                     to_close.append((sym, bar["close"], "time_flat"))
                     continue
@@ -432,7 +432,7 @@ def run_m5_backtest(
                 if pos.peak_favorable >= short_algo.TRAIL_TRIGGER_ATR_MULT * pos.entry_atr and not pd.isna(atr):
                     e8 = prepared.ema8[sym].iat[i]
                     trail = e8 + short_algo.TRAIL_STOP_ATR_MULT * atr
-                    pos.stop = min(pos.stop, max(trail, pos.entry_price))
+                    pos.stop = min(pos.stop, min(trail, pos.entry_price))
                 if time_now >= TIME_FLAT:
                     to_close.append((sym, bar["close"], "time_flat"))
                     continue
@@ -524,7 +524,11 @@ def run_m5_backtest(
             tradeable = watchlist.build_tradeable_list(
                 eligible, sectors, config.min_list_score, config.top_n_list, config.top_n_tradeable, config.max_per_sector,
             )
-            slots_free = config.max_concurrent_long - len(positions) - sum(1 for o in pending.values() if o["direction"] == LONG)
+            slots_free = (
+                config.max_concurrent_long
+                - sum(1 for p in positions.values() if p.direction == LONG)
+                - sum(1 for o in pending.values() if o["direction"] == LONG)
+            )
             for sym in tradeable[:slots_free]:
                 bar = prepared.bars[sym].iloc[i]
                 atr = prepared.atr_m5[sym].iat[i]
@@ -559,7 +563,11 @@ def run_m5_backtest(
             tradeable_s = watchlist.build_tradeable_list(
                 eligible_s, sectors, config.min_list_score, config.top_n_list, config.top_n_tradeable, config.max_per_sector,
             )
-            slots_free_s = config.max_concurrent_short - len(positions) - sum(1 for o in pending.values() if o["direction"] == SHORT)
+            slots_free_s = (
+                config.max_concurrent_short
+                - sum(1 for p in positions.values() if p.direction == SHORT)
+                - sum(1 for o in pending.values() if o["direction"] == SHORT)
+            )
             for sym in tradeable_s[:slots_free_s]:
                 bar = prepared.bars[sym].iloc[i]
                 atr = prepared.atr_m5[sym].iat[i]

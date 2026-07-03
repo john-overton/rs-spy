@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rs_spy.backtest.engine_m5 import BacktestConfigM5, _prepare_m5, run_m5_backtest
+from rs_spy.backtest import engine_m5
+from rs_spy.backtest.engine_m5 import BacktestConfigM5, PreparedM5, _prepare_m5, run_m5_backtest
+from rs_spy.bias.buckets import BEAR, BULL, NO_TRIGGER
+from rs_spy.bias.regime import CHOP
 
 
 def _m1_session(date: str, n_minutes: int, start_price: float, drift: float, seed: int) -> pd.DataFrame:
@@ -293,3 +296,308 @@ def test_run_m5_backtest_no_new_entries_before_1015_or_after_1530_et(universe):
     tod = et_times - et_times.dt.normalize()
     assert (tod >= pd.Timedelta(hours=10, minutes=15)).all()
     assert (tod <= pd.Timedelta(hours=15, minutes=30)).all()
+
+
+# --- Review-round-1 regression tests -----------------------------------------
+#
+# Both tests below monkeypatch `engine_m5._prepare_m5` to inject a fully
+# hand-built `PreparedM5` instead of deriving one from realistic OHLCV data.
+# `_prepare_m5`/its own dict-reindexing behavior is already covered by the
+# tests above; these two tests are only exercising `run_m5_backtest`'s event
+# loop itself, so a fully controlled, deterministic `PreparedM5` (rather than
+# hoping realistic synthetic data happens to trip the exact conditions we
+# need) is the more direct and reliable seam -- every other lever in the loop
+# (bias, gates, scores, rrs/lrsi crossings, dip/bounce quality, ATR, EMA8) is
+# real `run_m5_backtest` code operating on data we chose, not mocked-out
+# behavior.
+
+
+def _flat_series(calendar, value):
+    return pd.Series(value, index=calendar)
+
+
+def _build_prepared_for_run_loop(
+    calendar,
+    *,
+    bias_by_bar,
+    regime_by_bar,
+    trigger_by_bar=None,
+    bars_by_symbol,
+    rrs_by_symbol,
+    gate_long_by_symbol=None,
+    score_long_by_symbol=None,
+    dip_quality_long_by_symbol=None,
+    ema8_by_symbol=None,
+    atr_by_symbol=None,
+    gate_short_by_symbol=None,
+    score_short_by_symbol=None,
+    bounce_quality_short_by_symbol=None,
+    rs_failure_short_by_symbol=None,
+) -> PreparedM5:
+    """Hand-builds a `PreparedM5` for driving `run_m5_backtest`'s event loop
+    directly, bypassing `_prepare_m5`'s (separately tested) derivation from
+    raw OHLCV. Every per-symbol dict defaults to an all-False/0-valued Series
+    for symbols not explicitly given a value, so callers only need to specify
+    the levers a given scenario actually exercises."""
+    symbols = list(bars_by_symbol)
+    gate_long_by_symbol = gate_long_by_symbol or {}
+    score_long_by_symbol = score_long_by_symbol or {}
+    dip_quality_long_by_symbol = dip_quality_long_by_symbol or {}
+    ema8_by_symbol = ema8_by_symbol or {}
+    atr_by_symbol = atr_by_symbol or {}
+    gate_short_by_symbol = gate_short_by_symbol or {}
+    score_short_by_symbol = score_short_by_symbol or {}
+    bounce_quality_short_by_symbol = bounce_quality_short_by_symbol or {}
+    rs_failure_short_by_symbol = rs_failure_short_by_symbol or {}
+    trigger_by_bar = trigger_by_bar if trigger_by_bar is not None else [NO_TRIGGER] * len(calendar)
+
+    bias_df = pd.DataFrame(
+        {
+            "bias": list(bias_by_bar),
+            "flip_flatten": [False] * len(calendar),
+            "trigger": list(trigger_by_bar),
+            "warmup": [False] * len(calendar),
+        },
+        index=calendar,
+    )
+    regime_d1_m5 = pd.Series(list(regime_by_bar), index=calendar)
+
+    bars, features = {}, {}
+    ema8, atr_m5, adv20_m5 = {}, {}, {}
+    gate_long, gate_short, score_long, score_short = {}, {}, {}, {}
+    rs_failure_long, rs_failure_short = {}, {}
+    vwap_loss_long, vwap_loss_short = {}, {}
+    momentum_stall_long, momentum_stall_short = {}, {}
+    confirm_trigger_long, confirm_trigger_short = {}, {}
+    dip_quality_long, bounce_quality_short, squeeze_guard_short = {}, {}, {}
+
+    for sym in symbols:
+        bars[sym] = bars_by_symbol[sym]
+        features[sym] = pd.DataFrame(
+            {
+                "rolling_rrs_m5": rrs_by_symbol[sym],
+                "lrsi_m5": _flat_series(calendar, 50.0),
+            },
+            index=calendar,
+        )
+        ema8[sym] = ema8_by_symbol.get(sym, _flat_series(calendar, 0.0))
+        atr_m5[sym] = atr_by_symbol.get(sym, _flat_series(calendar, 1.0))
+        adv20_m5[sym] = _flat_series(calendar, 50_000_000.0)
+        gate_long[sym] = gate_long_by_symbol.get(sym, _flat_series(calendar, False))
+        gate_short[sym] = gate_short_by_symbol.get(sym, _flat_series(calendar, False))
+        score_long[sym] = score_long_by_symbol.get(sym, _flat_series(calendar, 0.0))
+        score_short[sym] = score_short_by_symbol.get(sym, _flat_series(calendar, 0.0))
+        rs_failure_long[sym] = _flat_series(calendar, False)
+        rs_failure_short[sym] = rs_failure_short_by_symbol.get(sym, _flat_series(calendar, False))
+        vwap_loss_long[sym] = _flat_series(calendar, False)
+        vwap_loss_short[sym] = _flat_series(calendar, False)
+        momentum_stall_long[sym] = _flat_series(calendar, False)
+        momentum_stall_short[sym] = _flat_series(calendar, False)
+        confirm_trigger_long[sym] = _flat_series(calendar, False)
+        confirm_trigger_short[sym] = _flat_series(calendar, False)
+        dip_quality_long[sym] = dip_quality_long_by_symbol.get(sym, _flat_series(calendar, False))
+        bounce_quality_short[sym] = bounce_quality_short_by_symbol.get(sym, _flat_series(calendar, False))
+        squeeze_guard_short[sym] = _flat_series(calendar, False)
+
+    return PreparedM5(
+        calendar=calendar,
+        bias_df=bias_df,
+        regime_d1_m5=regime_d1_m5,
+        bars=bars,
+        features=features,
+        ema8=ema8,
+        atr_m5=atr_m5,
+        adv20_m5=adv20_m5,
+        gate_long=gate_long,
+        gate_short=gate_short,
+        score_long=score_long,
+        score_short=score_short,
+        rs_failure_long=rs_failure_long,
+        rs_failure_short=rs_failure_short,
+        vwap_loss_long=vwap_loss_long,
+        vwap_loss_short=vwap_loss_short,
+        momentum_stall_long=momentum_stall_long,
+        momentum_stall_short=momentum_stall_short,
+        confirm_trigger_long=confirm_trigger_long,
+        confirm_trigger_short=confirm_trigger_short,
+        dip_quality_long=dip_quality_long,
+        bounce_quality_short=bounce_quality_short,
+        squeeze_guard_short=squeeze_guard_short,
+    )
+
+
+def test_long_trail_stop_locks_in_more_than_breakeven_as_trend_extends(monkeypatch):
+    """Regression test for the inverted trailing-stop clamp (algo-spec 05
+    §4.6/06 §4: "trail stop to max(EMA8(M5) - 0.25xATR_M5, entry)"). The bug
+    computed `max(pos.stop, min(trail, pos.entry_price))`: once the trail
+    trigger fires and price keeps extending favorably (the normal case this
+    rule exists for), `min(trail, entry)` caps the candidate at breakeven
+    forever, so the stop can never advance past entry even as EMA8 climbs far
+    above it. This builds a symbol that trends up hard enough to trip the
+    1.5xATR trail trigger, keeps extending for many more bars (so EMA8 climbs
+    well past entry), then crashes through the stop -- the resulting
+    hard-stop exit price is the trailed stop level itself (`min(pos.stop,
+    bar_open)` with an intrabar-only crash, not a gap below it), so it
+    directly reveals whether the stop actually advanced past breakeven.
+    """
+    sym = "TRND"
+    n = 20
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+
+    closes = [100.0, 100.5, 101.0, 101.2]
+    closes += [101.2 + (k - 3) * 0.5 for k in range(4, 15)]  # sustained climb, i=4..14
+    closes += [60.0] * (n - len(closes))  # crash at i=15, then flat
+    opens = [c - 0.05 for c in closes]
+    highs = [c + 0.1 for c in closes]
+    lows = [c - 0.3 for c in closes]
+    # i=15: an intrabar crash (NOT a gap below the trailed stop) so the
+    # hard-stop fill (`min(pos.stop, bar_open)`) reflects the stop level
+    # itself, not just wherever the bar happened to open.
+    opens[15], highs[15], lows[15] = 106.5, 106.6, 55.0
+
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    ema8_vals = [c - 1.0 for c in closes]  # a plausible EMA8 lagging just under price in an uptrend
+    rrs_vals = [-1.0, 1.0] + [1.0] * (n - 2)  # crosses up at bar 1 -> arms the dip
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        ema8_by_symbol={sym: pd.Series(ema8_vals, index=calendar)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    assert not trades_df.empty, "expected the position to open and eventually hard-stop out"
+    trade = trades_df.iloc[0]
+    assert trade["direction"] == "LONG"
+    assert trade["exit_reason"] == "hard_stop"
+    # The crux of the regression: after the trend extends well past the
+    # 1.5xATR trigger, the trailed stop must have locked in MEANINGFULLY more
+    # than breakeven -- not frozen at (or below) entry, which is exactly what
+    # the inverted `min(trail, entry)` clamp produced (exit price ends up
+    # at/below entry, since the stop can never climb past it once triggered).
+    assert trade["exit_price"] - trade["entry_price"] > 2.0, (
+        f"exit_price {trade['exit_price']} was not meaningfully above entry_price "
+        f"{trade['entry_price']} -- trailing stop appears frozen at breakeven"
+    )
+
+
+def test_slots_free_short_book_not_starved_by_open_long_positions(monkeypatch):
+    """Regression test for the `slots_free`/`slots_free_s` cross-book
+    miscounting bug: both used `len(positions)` (ALL open positions, across
+    BOTH books) instead of counting only same-direction positions, so an open
+    LONG position incorrectly consumed a slot from the SHORT book's own
+    `max_concurrent_short` budget (and vice versa for the mirrored `slots_free`
+    line).
+
+    This builds two symbols: LNG goes long early (while bias is bullish) and
+    is never given a reason to exit, so it stays open for the rest of the
+    test -- occupying one "all positions" slot but zero actual short-book
+    slots. SHT then arms its own short dip only once bias flips bearish
+    (shorts require bearish bias to submit, by construction), reaching
+    ENTRY_EVAL while LNG's long position is still open. With
+    `max_concurrent_short=1`, the buggy `slots_free_s = 1 - len(positions) - ...`
+    sees LNG's still-open long and computes `1 - 1 - 0 = 0` -- SHT's short
+    order is never even submitted, and this test would see zero SHORT trades.
+    The fixed formula counts only SHORT positions (`0`), correctly leaving
+    `slots_free_s = 1`, and SHT's short goes through -- confirmed here by
+    forcing a clean `rs_failure` exit afterward so a completed SHORT trade
+    lands in the trade log for this test to assert on.
+
+    (The mirrored direction -- an open SHORT starving the LONG book via the
+    `slots_free` line -- is fixed identically for correctness/symmetry, but
+    is not independently reachable through this engine's real control flow:
+    a SHORT position's market-flip exit is unconditional on any bullish bar
+    (see `short.py`'s documented asymmetry vs. the LONG side's flip_flatten
+    -gated exit), while a new LONG submission requires that SAME bar (plus
+    the one before it) to be bullish -- so any open SHORT is always flushed
+    at least one bar before a LONG submission could ever see it in
+    `positions`. Reintroducing both buggy lines together, as this test's own
+    verification does, still exercises the reachable `slots_free_s` direction
+    and fails as expected.)
+    """
+    n = 12
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    bias_by_bar = [BULL] * 6 + [BEAR] * 6
+
+    # LNG: rrs crosses up at bar 1 -> DIP_ARMED -> ENTRY_EVAL at bar 2 -> fills
+    # at bar 3 -> flat/gently-drifting price, never triggers any exit rule, so
+    # it stays open through the rest of the test.
+    lng_closes = [100.0 + i * 0.02 for i in range(n)]
+    lng_bars = pd.DataFrame(
+        {
+            "open": [c - 0.02 for c in lng_closes],
+            "high": [c + 0.15 for c in lng_closes],
+            "low": [c - 0.15 for c in lng_closes],
+            "close": lng_closes,
+            "volume": [1_000.0] * n,
+        },
+        index=calendar,
+    )
+    lng_rrs = [-1.0, 1.0] + [1.0] * (n - 2)
+
+    # SHT: rrs stays positive (never arms) while bias is still bullish, then
+    # crosses down at bar 7 (bias has been bearish since bar 6) -> DIP_ARMED
+    # -> ENTRY_EVAL at bar 8, submits/fills around bars 8-9, then a scripted
+    # rs_failure at bar 10 forces a clean, deterministic exit.
+    sht_closes = [50.0] * n
+    sht_bars = pd.DataFrame(
+        {
+            "open": [49.95] * n,
+            "high": [50.1] * n,
+            "low": [49.8] * n,
+            "close": sht_closes,
+            "volume": [1_000.0] * n,
+        },
+        index=calendar,
+    )
+    sht_rrs = [1.0] * 7 + [-1.0] * (n - 7)
+    sht_rs_failure = [False] * 10 + [True] * (n - 10)
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=bias_by_bar,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={"LNG": lng_bars, "SHT": sht_bars},
+        rrs_by_symbol={"LNG": lng_rrs, "SHT": sht_rrs},
+        gate_long_by_symbol={"LNG": _flat_series(calendar, True), "SHT": _flat_series(calendar, False)},
+        score_long_by_symbol={"LNG": _flat_series(calendar, 100.0), "SHT": _flat_series(calendar, 0.0)},
+        dip_quality_long_by_symbol={"LNG": _flat_series(calendar, True)},
+        gate_short_by_symbol={"LNG": _flat_series(calendar, False), "SHT": _flat_series(calendar, True)},
+        score_short_by_symbol={"LNG": _flat_series(calendar, 0.0), "SHT": _flat_series(calendar, 100.0)},
+        bounce_quality_short_by_symbol={"SHT": _flat_series(calendar, True)},
+        rs_failure_short_by_symbol={"SHT": pd.Series(sht_rs_failure, index=calendar)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    config = BacktestConfigM5(shorts_enabled=True, max_concurrent_long=5, max_concurrent_short=1)
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={"LNG": pd.DataFrame(), "SHT": pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={"LNG": "Technology", "SHT": "Energy"},
+        config=config,
+    )
+    trades_df = result.trades_df()
+    short_trades = trades_df[trades_df["direction"] == "SHORT"] if not trades_df.empty else trades_df
+    assert not short_trades.empty, (
+        "SHT's short was starved by LNG's open long position occupying a slot it should "
+        "never have counted against -- slots_free_s must count only SHORT positions/pending orders"
+    )
+    assert (short_trades["symbol"] == "SHT").all()
