@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rs_spy.backtest.engine_m5 import BacktestConfigM5, _prepare_m5
+from rs_spy.backtest.engine_m5 import BacktestConfigM5, _prepare_m5, run_m5_backtest
 
 
 def _m1_session(date: str, n_minutes: int, start_price: float, drift: float, seed: int) -> pd.DataFrame:
@@ -213,3 +213,83 @@ def test_prepare_m5_regime_d1_m5_is_a_single_market_wide_series(universe):
         config=BacktestConfigM5(),
     )
     assert prepared.regime_d1_m5.index.equals(prepared.calendar)
+
+
+def test_run_m5_backtest_produces_a_trade_log_and_equity_curve(universe):
+    result = run_m5_backtest(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=BacktestConfigM5(),
+    )
+    assert result.equity_curve is not None
+    assert len(result.equity_curve) > 0
+    trades_df = result.trades_df()
+    if not trades_df.empty:
+        assert set(trades_df["exit_reason"].unique()) <= {
+            "hard_stop", "market_flip", "rs_failure", "vwap_loss",
+            "profit_take", "time_flat", "squeeze_guard",
+        }
+        assert (trades_df["shares"] > 0).all()
+
+
+def test_run_m5_backtest_never_exceeds_max_concurrent_long(universe):
+    config = BacktestConfigM5(max_concurrent_long=1)
+    result = run_m5_backtest(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=config,
+    )
+    trades_df = result.trades_df()
+    if trades_df.empty:
+        return
+    events = []
+    for _, t in trades_df.iterrows():
+        events.append((t["entry_time"], 1))
+        events.append((t["exit_time"], -1))
+    events.sort()
+    concurrent = 0
+    for _, delta in events:
+        concurrent += delta
+        assert concurrent <= 1
+
+
+def test_run_m5_backtest_shorts_disabled_by_default_produces_no_short_trades(universe):
+    result = run_m5_backtest(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    if not trades_df.empty:
+        assert (trades_df["direction"] == "LONG").all()
+
+
+def test_run_m5_backtest_no_new_entries_before_1015_or_after_1530_et(universe):
+    result = run_m5_backtest(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    if trades_df.empty:
+        return
+    et_times = trades_df["entry_time"].dt.tz_convert("America/New_York")
+    tod = et_times - et_times.dt.normalize()
+    assert (tod >= pd.Timedelta(hours=10, minutes=15)).all()
+    assert (tod <= pd.Timedelta(hours=15, minutes=30)).all()
