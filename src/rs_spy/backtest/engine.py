@@ -323,7 +323,13 @@ def run_d1_backtest(
             rrs_now = features[sym]["rrs_d1"].iat[i]
             rrs_prev = features[sym]["rrs_d1"].iat[i - 1] if i > 0 else None
             state[sym] = watchlist.next_state_long(
-                state[sym], gp, score, rrs_prev, rrs_now, config.min_list_score, config.min_hold_score
+                state[sym],
+                gp,
+                score,
+                rrs_prev,
+                rrs_now,
+                min_list_score=config.min_list_score,
+                min_hold_score=config.min_hold_score,
             )
             if gp and not pd.isna(score):
                 today_scores_long[sym] = score

@@ -49,7 +49,13 @@ def _entry_signals(bars_by_symbol, spy, qqq, earnings_blackout, config):
             rrs_prev = features[sym]["rrs_d1"].iat[i - 1] if i > 0 else None
             prev_state = state[sym]
             new_state = watchlist.next_state_long(
-                prev_state, gp, score, rrs_prev, rrs_now, config.min_list_score, config.min_hold_score
+                prev_state,
+                gp,
+                score,
+                rrs_prev,
+                rrs_now,
+                min_list_score=config.min_list_score,
+                min_hold_score=config.min_hold_score,
             )
             if prev_state == watchlist.IDLE and new_state == watchlist.QUALIFIED:
                 signals.append((sym, i, day))
