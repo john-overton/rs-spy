@@ -2,31 +2,54 @@
 
 Status snapshot for resuming work. Specs live in `algo-spec/` (the *what/why*);
 this document is the *what's actually built* (the *how*, and where it
-deviates from spec). Written at the M4 checkpoint. Read "Critical: a real
-timezone bug affected all data before this point" before trusting any date
-in an earlier report (trade dates, trigger dates, etc.) — the underlying
-OHLCV values and all numeric results were never wrong, only date labels.
+deviates from spec). Written at the M4 checkpoint, updated at the M5
+checkpoint. Read "Critical: a real timezone bug affected all data before
+this point" before trusting any date in an earlier report (trade dates,
+trigger dates, etc.) — the underlying OHLCV values and all numeric results
+were never wrong, only date labels.
+
+## Milestone tracker
+
+- M0-M3: D1 walking skeleton (universe, ingestion, D1 indicators, D1
+  bias/selection engines, D1 backtest) — **complete**.
+- M3.5: validation studies (ablation, walk-away, RRS sensitivity), universe
+  expansion 28 -> 130 — **complete**.
+- M4: timezone bug fix + full warehouse rebuild, 5-year/130-symbol minute
+  backfill, M5-only indicators (VWAP, RVOL, Laguerre RSI) — **complete**.
+- **M5: full intraday market-bias engine (algo-spec 03) + stock-selection
+  engine (algo-spec 04) at true M5 cadence — complete (this checkpoint).**
+  Engine functions only, unit tested; no backtest replay loop, no order
+  execution, no position management (that's M6). See "M5:..." section below.
+- M6: M5-cadence event-driven backtest engine, long/short algo per
+  algo-spec 05/06/07 — **not started**.
 
 ## TL;DR
 
 A working, real-data-verified, end-to-end **daily-bar (D1)** backtest of the
-RS/RW system runs cleanly (90 passing tests, lint clean) against 5+ years of
-cached Alpaca daily bars for a **130-symbol** curated universe (grown from 28
-during M3.5). M3.5 found real signal (437 walk-away entry signals, stable
-~1.9R mean MFE; an RRS-window sensitivity sweep favoring `window=3` over the
-M3 default of 5) but also revealed that the D1 approximation trades on
-multi-day/multi-week holds (5-35 days) — a fundamentally different shape
-from the actual intraday spec, so tuning it further wasn't worth continued
-investment. **M4 (this checkpoint) backfilled 5 years of minute bars for
-the full 130-symbol universe (44.1M rows)** and, in the process, found and
-fixed two real bugs: a timezone bug that silently corrupted every stored
-bar's date/time (see below — serious, now fixed, warehouse fully rebuilt),
-and an RVOL design flaw (arrival-order indexing breaks on IEX's frequent
-data gaps for less-liquid names). Also built ahead of schedule: the three
-M5-only indicators with no D1 equivalent (VWAP, RVOL, Laguerre RSI),
-tested and ready for the M5 selection/bias engine build. Full M5
-bias/selection engines and the M5-cadence backtest engine are **not started**
-— that's M5/M6.
+RS/RW system runs cleanly against 5+ years of cached Alpaca daily bars for a
+**130-symbol** curated universe (grown from 28 during M3.5). M3.5 found real
+signal (437 walk-away entry signals, stable ~1.9R mean MFE; an RRS-window
+sensitivity sweep favoring `window=3` over the M3 default of 5) but also
+revealed that the D1 approximation trades on multi-day/multi-week holds
+(5-35 days) — a fundamentally different shape from the actual intraday spec,
+so tuning it further wasn't worth continued investment. M4 backfilled 5
+years of minute bars for the full 130-symbol universe (44.1M rows) and, in
+the process, found and fixed two real bugs: a timezone bug that silently
+corrupted every stored bar's date/time (see below — serious, now fixed,
+warehouse fully rebuilt), and an RVOL design flaw (arrival-order indexing
+breaks on IEX's frequent data gaps for less-liquid names). Also built ahead
+of schedule: the three M5-only indicators with no D1 equivalent (VWAP,
+RVOL, Laguerre RSI). **M5 (this checkpoint) built the real thing on top of
+all of that**: `data/resample.py` (1-min -> true 5-min -> H1 aggregation +
+causal cross-timeframe alignment), the full 8-component M5 market-bias
+engine (`bias/engine.py`), per-stock M5 feature computation
+(`selection/features_m5.py`), and the full 9-gate/7-weight M5 selection
+engine (`selection/gates.py`/`scoring.py` extensions, `selection/watchlist.py`
+LRSI dip-arm + trigger bypass). Found and fixed five real bugs during the
+build (see "M5:..." section below) — most notably a genuine 1-minute
+lookahead leak in the M1-to-M5 alignment path. **124 tests passing, lint
+clean.** Full M5-cadence backtest engine and position management are **not
+started** — that's M6.
 
 ## Critical: a real timezone bug affected all data before this point
 
@@ -67,7 +90,7 @@ dates.
 cd /Users/johnoverton/Development/rs-spy
 source .venv/bin/activate        # venv already created, deps installed
 
-python -m pytest -q              # 90 tests, hermetic, no network/credentials needed
+python -m pytest -q              # 124 tests, hermetic, no network/credentials needed
 ruff check .                     # clean
 
 python scripts/smoke_test.py               # needs .env (Alpaca keys) -- confirms auth + data shape
@@ -112,6 +135,8 @@ src/rs_spy/
     loader.py                     # load_daily_bars(), load_minute_bars(rth_only=True), + universe-wide variants
     session.py                     # rth_mask()/filter_rth() -- ET-timezone-aware RTH filter (M4, see below)
     schemas.py                     # AggBar, FetchTask pydantic models (lightly used so far)
+    resample.py                     # (M5, new) resample_ohlcv(freq, closed=) -- 1min->M5->H1 aggregation;
+                                     #   align_causal()/align_daily_to_intraday() -- causal cross-timeframe alignment
 
   indicators/                # D1-capable set unchanged; M5-only set (vwap, rvol, laguerre_rsi) now built (M4)
     atr.py                    # Wilder ATR, vectorized (seeded EWM splice)
@@ -129,12 +154,32 @@ src/rs_spy/
     regime.py                  # regime_d1(): TREND_UP/CHOP/TREND_DOWN via linreg slope + SMA50 slope agreement
     engine_d1.py                # bias_series_d1(): 8-component D1 score -> EMA(3) smooth -> hysteresis bucket
                                  #   + compute_trigger(): LONG_TRIGGER/SHORT_TRIGGER (D1 version of 03 §5)
+                                 #   (M5, refactored) now a thin wrapper over buckets.py/trigger.py, below
+    buckets.py                   # (M5, new) hysteresis bucket vocabulary + apply_hysteresis() -- extracted
+                                  #   from engine_d1.py, shared by both D1 and M5 engines
+    trigger.py                    # (M5, new) compute_trendline_trigger() -- extracted from engine_d1.py, shared
+    daily_context.py                # (M5, new) daily_context_series(): pre-open pass -- regime_d1, prior-day
+                                     #   D1 high/low/close, suspect_rally/selloff breakout audit (03 §2);
+                                     #   un-shifted by design, callers align with shift=1
+    engine.py                        # (M5, new) full 8-component M5 bias engine (03 §3-6): compute_raw_score(),
+                                      #   bias_series() -- EMA-3 smoothing, hysteresis, trigger, warmup, flip_flatten
 
   selection/
     features.py                 # compute_symbol_features(): per-symbol D1 feature DataFrame (rrs, ha_cont, etc.)
     gates.py                      # D1-available hard gates (G1,G4,G5,G6,G7,G8; G2/G3/G9 dropped, no D1 equivalent)
+                                   # (M5, extended) full G1-G9 set added at bottom: gate_vwap_*, gate_rrs_m5_*,
+                                   #   gate_not_one_candle_wonder, gate_no_gap_exclusion, gate_benchmark_crosscheck_*,
+                                   #   gates_pass_long_m5/gates_pass_short_m5
     scoring.py                     # score_long/score_short, W1->W2 weight redistribution (see below)
+                                    # (M5, extended) score_long_m5/score_short_m5 -- full un-redistributed 7-weight
+                                    #   table (04 §4), now that RollingRRS_M5 (W1) is available
+    features_m5.py                  # (M5, new) compute_symbol_features_m5(): per-stock M5 feature computation --
+                                     #   RRS_M5 (H1 ATR), VWAP/RVOL (1-min bars aligned to M5), LRSI, one-candle-
+                                     #   wonder anti-pattern, gap_pct, D1-feature passthrough
     watchlist.py                    # IDLE/QUALIFIED/DIP_ARMED/ENTRY_EVAL state machine, build_tradeable_list()
+                                     # (M5, extended) next_state_long/_short gained keyword-only lrsi_prev/lrsi_now
+                                     #   (04 §6 dip-arm OR-condition); new apply_trigger_bypass() (trigger-day
+                                     #   direct-entry exception)
 
   backtest/
     engine.py                    # run_d1_backtest(): day-loop, close(t)-signal -> open(t+1)-fill, full position mgmt
@@ -151,7 +196,9 @@ scripts/
   smoke_test.py, backfill_daily.py, backfill_intraday.py, run_backtest_d1.py, run_validation_studies_m35.py
   # run_backtest_intraday.py, run_validation_studies.py (full 08 suite) NOT built yet (M6/M7)
 
-tests/unit/       # 13 files, golden + property(hypothesis) + no-lookahead causality + M3.5 study smoke tests, all hermetic
+tests/unit/       # 23 files (M5, new: test_resample.py, test_daily_context.py, test_features_m5.py,
+                  #   test_engine_m5.py, test_gates_m5.py, test_scoring_m5.py, test_watchlist_m5.py), golden +
+                  #   property(hypothesis) + no-lookahead causality + M3.5 study smoke tests, all hermetic
 tests/integration/ # test_cache_resume.py -- kill/resume + error-retry semantics + symbol-batch semantics, mocked HTTP, no network
 ```
 
@@ -260,7 +307,10 @@ These matter for anyone reading backtest results without also reading the code:
 
 ## Test coverage
 
-65 tests, all hermetic (no network calls, no real credentials needed):
+65 tests as of the M3 checkpoint (this section describes those original test
+categories; M3.5, M4, and M5 added more test files on top -- see their
+respective sections below -- bringing the total to 124 as of this M5
+checkpoint), all hermetic (no network calls, no real credentials needed):
 
 - **Golden**: hand-computed fixtures for ATR, RRS (using the exact worked examples from
   `documents/A-New-Measure-of-Relative-Strength.md`), Heikin-Ashi, SMA stack, candle structure,
@@ -389,6 +439,125 @@ minute-bar data, done) and M5 (the real intraday cadence and gate/score/trigger 
 good or bad result actually says something about the system being built, rather than continuing
 to calibrate a proxy whose trade timing doesn't resemble the target strategy at all.
 
+## M5: full intraday market-bias + stock-selection engines
+
+Built the real M5-cadence system (algo-spec 03/04) on top of the D1 walking skeleton and the
+M5-only indicators M4 built ahead of schedule (VWAP, RVOL, Laguerre RSI). This milestone stops at
+"engine functions exist, are unit tested, and are documented" — the same boundary M3 drew around
+`bias/engine_d1.py`/`selection/*.py` before `backtest/engine.py` wired them together. **No backtest
+replay loop, no order execution, no position management were built here** — that's M6. Per §7 of
+the spec, the scheduled-event blackout only gates new *entries* ("bias keeps computing throughout")
+— an M6/algo-layer concern, so `bias/engine.py` doesn't implement it.
+
+**What was built:**
+
+- `data/resample.py` — `resample_ohlcv(df, freq, closed="left")` aggregates the warehouse's raw
+  1-minute bars up to true 5-minute (M5) bars, and M5 bars up to hourly (H1) bars. This step exists
+  because the warehouse only stores 1-minute bars (what Alpaca actually returns), but the spec's M5
+  math is calibrated for 5-minute spacing: `RollingRRS_M5`'s window `L=12` means "1 hour" only if
+  each bar is 5 minutes, Laguerre RSI's `gamma=0.5` default decays at a 5-minute rate, and trendline
+  pivot spacing assumes 5-minute bars. Also provides `align_causal(source, target_index)` (generic
+  causal forward-fill: target[t] sees the most recent source value at or before t, never later) and
+  `align_daily_to_intraday(daily, intraday_index, shift=1)` (broadcasts a D1-indexed series onto an
+  intraday index, shifted by one session by default so a session never sees its own not-yet-closed
+  D1 row) — the two alignment primitives everything else in M5 is built on.
+- `bias/buckets.py` + `bias/trigger.py` — the hysteresis bucket vocabulary/`apply_hysteresis` and
+  `compute_trendline_trigger`, extracted from `bias/engine_d1.py` (pure refactor, cadence-agnostic
+  logic that both the D1 and M5 engines now share instead of duplicating).
+- `bias/daily_context.py` — `daily_context_series(spy_d1)`: the pre-open daily-context pass (03
+  §2) — `regime_d1`, prior-day D1 high/low/close, and a `suspect_rally`/`suspect_selloff` breakout
+  audit (a fresh D1 trendline breach within the trailing 3 sessions whose `follow_through()` check
+  doesn't confirm). Deliberately **not** causally shifted — every column describes that row's own
+  close-of-day state; callers align it onto intraday bars with `shift=1`.
+- `selection/features_m5.py` — `compute_symbol_features_m5(...)`: the per-stock M5 feature
+  DataFrame. `RRS_M5` uses `ATR(H1, 50)` (H1 bars resampled from the symbol's own and SPY's M5
+  bars); VWAP and RVOL are computed on the raw 1-minute frame per 02 §3 ("from 1-min bars") and
+  causally aligned onto the M5 index; LRSI runs directly on M5 closes; one-candle-wonder anti-pattern
+  detection (a single M5 bar contributing >60% of the RRS window's total price change) and `gap_pct`
+  are computed here; D1-only signals (`ha_cont_d1`, `sma_stack`, headroom, D1 RRS) are reused as-is
+  from `selection/features.py` and broadcast onto the M5 index.
+- `bias/engine.py` — `compute_raw_score`/`bias_series`: the full 8-component M5 bias engine (VWAP
+  side, M5 candle structure, intraday day-range position, prior-day levels, M5 trendline state, M5
+  volume confirmation, D1 regime agreement, QQQ agreement), EMA-3 smoothing, 2-bar hysteresis
+  (reusing `bias/buckets.py`), the trendline-breach trigger (reusing `bias/trigger.py`), a `warmup`
+  flag (True before 10:15 ET), and a `flip_flatten` signal for 03 §6's bias-flip rule (signal only —
+  the actual flattening *action* is M6's job).
+- `selection/gates.py` extended with the full G1-G9 set: `gate_vwap_long/short`,
+  `gate_rrs_m5_long/short`, `gate_not_one_candle_wonder`, `gate_no_gap_exclusion`,
+  `gate_benchmark_crosscheck_long/short` (G9, QQQ cross-check), `gates_pass_long_m5`/
+  `gates_pass_short_m5` composing the full set.
+- `selection/scoring.py` extended with `score_long_m5`/`score_short_m5`: the full un-redistributed
+  7-weight table (04 §4), now that `RollingRRS_M5` (W1, 25 pts) is actually available, instead of
+  the D1 walking skeleton's W1->W2 redistribution.
+- `selection/watchlist.py` extended: `next_state_long`/`next_state_short` gained optional
+  keyword-only `lrsi_prev`/`lrsi_now` params implementing 04 §6's "RRS crosses OR LRSI crosses"
+  dip-arm OR-condition (omitting them reproduces the D1 caller's RRS-only behavior exactly); new
+  `apply_trigger_bypass` implements the trigger-day direct-entry exception (a QUALIFIED symbol goes
+  straight to ENTRY_EVAL on a matching bias-engine trigger, instead of waiting for its own dip).
+  `build_tradeable_list` is unchanged — already cadence-agnostic, reused as-is from the D1 build.
+- Roughly 34 new tests across all of the above (`test_resample.py`, `test_daily_context.py`,
+  `test_features_m5.py`, `test_engine_m5.py`, `test_gates_m5.py`, `test_scoring_m5.py`,
+  `test_watchlist_m5.py`), bringing the total from 90 (post-M4) to **124**.
+
+**Real bugs found and fixed during this build** (all resolved, all reviewed) — these matter more
+than the feature list above for anyone extending this code later:
+
+1. **M1-open-label vs. M5/H1-close-label lookahead bug.** Raw 1-minute bars from the warehouse are
+   open-labeled (timestamp = interval start); `resample_ohlcv`'s M5/H1 output is close-labeled
+   (timestamp = interval end, via `label="right"`). Calling `align_causal` directly on a
+   1-minute-cadence series (VWAP or RVOL computed on 1-min bars) against the M5 index let an M5 bar
+   pick up a not-yet-closed 1-minute bar sharing its own timestamp — a genuine 1-minute-of-future-
+   data leak. Fixed with a `_close_label` helper (shifts the 1-min series' index forward by one
+   minute before aligning), applied everywhere VWAP/RVOL-on-1-min-bars gets aligned onto an M5
+   index, in both `selection/features_m5.py` and `bias/engine.py`, for SPY, QQQ, and every traded
+   symbol. Covered by a regression test (`test_vwap_side_does_not_leak_the_next_minute_bar` in
+   `test_engine_m5.py`).
+2. **`gap_pct` used SPY's prior close instead of the stock's own.** An early version of
+   `features_m5.py` computed the overnight-gap anti-pattern check (04 §3, ">20% gap excluded for
+   the day") against SPY's prior D1 close rather than the stock's own — meaning nearly every
+   non-SPY-priced symbol would show a huge spurious "gap" and get permanently excluded. Fixed to use
+   the stock's own D1 close, already available via the existing D1-feature-reuse pipeline
+   (`d1_aligned["close"]`).
+3. **H1-from-M5 resample hour-boundary misattribution.** Resampling M5 bars up to H1 bars (needed
+   for `RRS_M5`'s `ATR(H1, 50)` input) initially used the same `closed="left"` bucketing as the
+   M1->M5 step, but M5 bars are close-labeled, not open-labeled like M1 — so an M5 bar sitting
+   exactly on an hour boundary got attributed to the *next* hour instead of the one it actually
+   closed in. Not a lookahead violation (always prior real data), but a systematic ~5-minute-per-
+   hour precision bug in the ATR50 input. Fixed by adding an optional `closed` parameter to
+   `resample_ohlcv` (default `"left"`, backward compatible with the M1->M5 call site) and calling it
+   with `closed="right"` specifically for the M5->H1 step.
+4. **A genuine plan gap: `candle_structure.stacked_count` had no M5-RVOL override.** The M5 bias
+   engine's candle-structure "stacked" component (c2) needed M5-cadence, time-of-day-adjusted RVOL
+   instead of the D1-only `volume_ratio_d1` that `stacked_count` always computed internally — the
+   plan's own M5 engine code assumed a `volume_ratio` override parameter existed on that function
+   before it did. Fixed with an additive, backward-compatible optional parameter (defaults to
+   `None`, preserving the existing D1 callers' exact behavior).
+5. **Silent backward-compatibility break from parameter ordering.** Adding the new optional
+   `lrsi_prev`/`lrsi_now` parameters to `next_state_long`/`next_state_short` *before* the
+   pre-existing `min_list_score`/`min_hold_score` parameters would have meant two existing
+   production call sites (which pass those two thresholds positionally) silently swallowing their
+   real threshold values into the new LRSI parameters instead — masked only by coincidence (the
+   default threshold values happened to match). Fixed by making all four trailing parameters
+   keyword-only (a bare `*` in the signature), which also converts any *future* mistake of this kind
+   into an immediate `TypeError` instead of a silent bug; both call sites updated to pass the
+   thresholds as keywords.
+
+**Disclosed, not fixed (deliberate simplifications, matching this project's "document, don't
+silently approximate" norm — see `selection/scoring.py`'s module docstring):**
+
+- W3's "+3 if 8-EMA(D1) preserved on all pullbacks in window" sub-bonus is not implemented (base
+  HA-continuation-length scoring only).
+- W7's "lowest tercile of candidates" cross-sectional ranking is not implemented; M5 scoring reuses
+  the D1 precedent's per-symbol continuous-std formula instead, rather than introducing an unrelated
+  cross-sectional ranking API for this one weight.
+- W4's "(or holding flat, RRS >= 2)" alternate path to the full 15-point divergence bonus is not
+  implemented — only the primary "stock moves opposite the market" path scores the full bonus; a
+  flat-price/high-RRS candidate only gets the proportional (~8 pt) score. Deferred as a third
+  documented simplification alongside the two above rather than inventing a threshold for "flat"
+  with no clean spec-given definition.
+- News-halt anti-pattern exclusion (04 §3) is not implemented — there is no live halt feed available
+  for backtesting against historical Alpaca bars.
+
 ## Known limitations / open risks (unchanged from the plan except where noted)
 
 1. IEX vs. consolidated-tape data divergence -- see deviation #5 above; larger than "minor" for
@@ -410,28 +579,50 @@ to calibrate a proxy whose trade timing doesn't resemble the target strategy at 
 6. RRS window sensitivity (08 §3.3) suggests the M3 default (`RRS_D1_WINDOW=5`) may be
    miscalibrated (`window=3` outperformed it on every swept threshold/basis) -- deliberately not
    acted on; deprioritized in favor of M4/M5 (see "Decision made after this checkpoint" above).
-   Worth revisiting for the *M5* RRS window default (`RRS_M5_WINDOW`, spec value L=12) once that's
-   built, since the same sensitivity-sweep methodology applies there too.
+   `RRS_M5_WINDOW` (now built, `selection/features_m5.py`, spec value L=12) hasn't had the same
+   sensitivity-sweep methodology applied to it yet -- worth doing once M6's backtest engine exists
+   to actually run it against.
 7. `indicators/vwap.py` and `indicators/rvol.py` require pre-filtered RTH-only input and will
    silently produce wrong (not erroring) results if called on raw minute bars that still include
    pre/post-market rows -- always go through `data.loader.load_minute_bars()` (RTH-filtered by
    default) rather than querying `bars` directly for `timespan='minute'`.
-8. `indicators/rvol.py` will be NaN often for illiquid names/times (see deviation #10) --
-   expected, but means RVOL-based gates in the M5 selection engine will need a documented
-   fallback (e.g. treat NaN as "gate fails" rather than raising) once built.
+8. `indicators/rvol.py` will be NaN often for illiquid names/times (see deviation #10) -- the M5
+   gates (`selection/gates.py::gate_volume`/`gate_rrs_m5_*`) handle this the same way pandas
+   comparisons naturally do (`NaN >= threshold` is `False`), so a NaN RVOL/RRS_M5 value fails its
+   gate rather than raising or silently passing -- not a special-cased fallback, just confirmed
+   behavior worth knowing about before assuming a NaN means "no signal" rather than "gate fails."
 9. `data/warehouse.duckdb` is now ~3.2GB (44.1M minute rows dominate). Fine for local dev; worth
    knowing before assuming this fits an ad hoc backup/sync workflow.
+10. M5 scoring's three documented simplifications (W3's EMA8-pullback sub-bonus, W7's
+    per-symbol-continuous vs. cross-sectional-tercile formula, W4's missing "flat/RRS>=2" alternate
+    bonus path) and the deferred news-halt anti-pattern exclusion (no live halt feed available for
+    backtesting) -- see the M5 section above. None are silent: all four are documented in
+    `selection/scoring.py`'s module docstring (the first three) or this file (news-halt).
+11. `bias/engine.py`'s §7 scheduled-event blackout is not implemented (bias computation runs
+    continuously, per spec; blackout is an entry-gating concern for M6's algo layer, not an engine
+    output) -- M6 needs to add this gate before real entries are evaluated around scheduled events
+    (FOMC, CPI, etc.).
 
-## Next: M5 (full intraday indicator/bias/selection engines)
+## Next: M6 (event-driven M5 backtest engine + long/short algo)
 
-Per the plan: build the real M5-cadence system now that minute data is cached and the three
-M5-only indicators (VWAP, RVOL, Laguerre RSI) are built and tested. Remaining M5 scope: M5
-trendlines/breach trigger (reuse `indicators/trendlines.py` with `strength=3, min_gap=6` per
-spec -- likely no new code needed, just different call parameters at M5 cadence), the H1-basis
-ATR that M5 RRS needs (`ATR(H1, 50)` -- requires resampling M5 bars to H1, not yet built), the
-full 8-component M5 bias engine (03), the full 9-gate M5 selection engine including the two
-gates dropped from the D1 version (G2 M5 RS, G3 VWAP) plus the deferred G9 (QQQ cross-check), and
-the LRSI-based dip-arm mechanism (05 §3's real version, vs. D1's raw-RRS-crossing proxy). This is
-substantially more code than the D1 walking skeleton was -- worth scoping/sequencing explicitly
-with the user before starting, rather than assuming the D1 module structure just extends
-cleanly to M5 cadence.
+Full M5 market-bias and stock-selection engines exist now, are unit tested (124 tests), and are
+documented above (see "M5:..." section) — but nothing wires them into a real backtest yet. M6
+hasn't been scoped in detail (worth doing explicitly with the user before starting, the same way
+M5 was), but the high-level remaining work is:
+
+- An M5-cadence, event-driven backtest engine (`backtest/` or a new module) that replays real
+  intraday bars bar-by-bar, unlike `backtest/engine.py`'s D1 day-loop — this is the actual
+  intraday round-trip the spec describes ("at least 5 really good trades throughout the day"),
+  which the D1 skeleton could never produce (see deviation #8 in the D1 section above).
+- The long algo (algo-spec 05) and short algo (algo-spec 06): entry sequencing off
+  `bias/engine.py`'s `trigger`/`flip_flatten` outputs and `selection/watchlist.py`'s state machine,
+  position sizing/risk (a real `algo/risk.py`, replacing the D1 skeleton's inline
+  fixed-fractional sizing — known limitation #4 above), and the full exit stack (hard stop,
+  bias-flip flattening — `flip_flatten` is currently signal-only, RRS failure, profit-take,
+  trailing stop, VWAP-loss exit) per 05 §4/06 §4.
+- Position management / order execution (algo-spec 07) — currently nothing exists in `algo/`
+  (still an empty package).
+- The §7 scheduled-event entry blackout (known limitation #11 above) needs to be wired in as an
+  entry gate once real entries are being evaluated.
+- Once a real M5 backtest can run, revisit the M5 RRS window default (`RRS_M5_WINDOW=12`, known
+  limitation #6 above) with the same sensitivity-sweep methodology M3.5 used at D1 cadence.
