@@ -36,7 +36,7 @@ def try_fill_entry(direction: str, limit_price: float, bar_open: float, bar_high
         if bar_low <= limit_price:
             return min(limit_price, bar_open) if bar_open <= limit_price else limit_price
         return None
-    if bar_low <= limit_price:
+    if bar_high >= limit_price:
         return max(limit_price, bar_open) if bar_open >= limit_price else limit_price
     return None
 
