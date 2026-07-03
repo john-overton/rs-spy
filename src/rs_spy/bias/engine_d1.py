@@ -35,26 +35,28 @@ on entry (immediate exit back to NEUTRAL), matching 03 §3's thresholds
 import numpy as np
 import pandas as pd
 
+from rs_spy.bias.buckets import (  # noqa: F401
+    BEAR,
+    BEAR_TH,
+    BULL,
+    BULL_TH,
+    LONG_TRIGGER,
+    NEUTRAL,
+    NO_TRIGGER,
+    SHORT_TRIGGER,
+    STRONG_BEAR,
+    STRONG_BEAR_TH,
+    STRONG_BULL,
+    STRONG_BULL_TH,
+    apply_hysteresis,
+)
 from rs_spy.bias.regime import TREND_DOWN, TREND_UP, regime_d1
+from rs_spy.bias.trigger import compute_trendline_trigger
 from rs_spy.indicators.atr import atr as atr_fn
 from rs_spy.indicators.candle_structure import stacked_count, volume_ratio_d1
 from rs_spy.indicators.sma_stack import ABOVE_ALL, BELOW_ALL, smas, sma_stack
-from rs_spy.indicators.trendlines import breach_down, breach_up, down_trendline, up_trendline
+from rs_spy.indicators.trendlines import down_trendline, up_trendline
 
-STRONG_BULL = "STRONG_BULL"
-BULL = "BULL"
-NEUTRAL = "NEUTRAL"
-BEAR = "BEAR"
-STRONG_BEAR = "STRONG_BEAR"
-
-LONG_TRIGGER = "LONG_TRIGGER"
-SHORT_TRIGGER = "SHORT_TRIGGER"
-NO_TRIGGER = "NONE"
-
-BULL_TH = 25.0
-STRONG_BULL_TH = 60.0
-BEAR_TH = -25.0
-STRONG_BEAR_TH = -60.0
 HOLD_DAYS = 2
 EMA_SPAN = 3
 
@@ -118,74 +120,11 @@ def compute_raw_score(spy: pd.DataFrame, qqq: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_trigger(spy: pd.DataFrame, bias: pd.Series) -> pd.Series:
-    """03 §5 timing trigger, D1 cadence: fires the day SPY's close breaches
-    its D1 trendline (or, absent an active trendline, on the day bias first
-    reads STRONG_BULL/STRONG_BEAR -- "if SPY is very bullish you do not need
-    to wait"). This is the primary entry mechanism (05/06 Path A); the
+    """03 §5 timing trigger, D1 cadence -- see bias/trigger.py for the shared
+    implementation. This is the primary entry mechanism (05/06 Path A); the
     per-symbol watchlist dip-arm state machine (selection/watchlist.py) is
     the secondary path used the rest of the time between triggers."""
-    atr14 = atr_fn(spy, n=14)
-    down_tl = down_trendline(spy)
-    up_tl = up_trendline(spy)
-
-    b_up = breach_up(spy["close"], down_tl, atr14)
-    b_down = breach_down(spy["close"], up_tl, atr14)
-    # shift(1).fillna(False) on a bool Series introduces NaN at the boundary
-    # and upcasts the dtype to object, silently turning `~` into deprecated
-    # per-element Python int inversion instead of numpy boolean negation --
-    # shift(fill_value=False) avoids the NaN entirely, keeping this a real
-    # bool Series.
-    fresh_up = b_up & ~b_up.shift(1, fill_value=False)
-    fresh_down = b_down & ~b_down.shift(1, fill_value=False)
-
-    strong_bull_no_line = (bias == STRONG_BULL) & down_tl.isna() & (bias.shift(1) != STRONG_BULL)
-    strong_bear_no_line = (bias == STRONG_BEAR) & up_tl.isna() & (bias.shift(1) != STRONG_BEAR)
-
-    long_trigger = (bias.isin([BULL, STRONG_BULL])) & (fresh_up | strong_bull_no_line)
-    short_trigger = (bias.isin([BEAR, STRONG_BEAR])) & (fresh_down | strong_bear_no_line)
-
-    result = pd.Series(NO_TRIGGER, index=spy.index, dtype=object)
-    result[long_trigger] = LONG_TRIGGER
-    result[short_trigger] = SHORT_TRIGGER
-    return result.rename("trigger")
-
-
-def _apply_hysteresis(smoothed: pd.Series) -> pd.Series:
-    n = len(smoothed)
-    bucket: list[str | None] = [None] * n
-    state = NEUTRAL
-    pending_dir: str | None = None
-    pending_count = 0
-
-    for i in range(n):
-        s = smoothed.iat[i]
-        if pd.isna(s):
-            bucket[i] = None
-            continue
-
-        if state == NEUTRAL:
-            if s >= BULL_TH or s <= BEAR_TH:
-                direction = BULL if s >= BULL_TH else BEAR
-                if pending_dir == direction:
-                    pending_count += 1
-                else:
-                    pending_dir, pending_count = direction, 1
-                if pending_count >= HOLD_DAYS:
-                    if direction == BULL:
-                        state = STRONG_BULL if s >= STRONG_BULL_TH else BULL
-                    else:
-                        state = STRONG_BEAR if s <= STRONG_BEAR_TH else BEAR
-                    pending_dir, pending_count = None, 0
-            else:
-                pending_dir, pending_count = None, 0
-        elif state in (BULL, STRONG_BULL):
-            state = NEUTRAL if s < BULL_TH else (STRONG_BULL if s >= STRONG_BULL_TH else BULL)
-        else:  # BEAR, STRONG_BEAR
-            state = NEUTRAL if s > BEAR_TH else (STRONG_BEAR if s <= STRONG_BEAR_TH else BEAR)
-
-        bucket[i] = state
-
-    return pd.Series(bucket, index=smoothed.index, name="bias")
+    return compute_trendline_trigger(spy, bias, atr_period=14)
 
 
 def bias_series_d1(spy: pd.DataFrame, qqq: pd.DataFrame) -> pd.DataFrame:
@@ -194,7 +133,7 @@ def bias_series_d1(spy: pd.DataFrame, qqq: pd.DataFrame) -> pd.DataFrame:
     components = compute_raw_score(spy, qqq)
     smoothed = components["raw_score"].ewm(span=EMA_SPAN, adjust=False).mean()
     smoothed[components["raw_score"].isna()] = np.nan
-    bucket = _apply_hysteresis(smoothed)
+    bucket = apply_hysteresis(smoothed, hold_bars=HOLD_DAYS)
     trigger = compute_trigger(spy, bucket)
     return pd.DataFrame(
         {
