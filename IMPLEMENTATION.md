@@ -2,8 +2,8 @@
 
 Status snapshot for resuming work. Specs live in `algo-spec/` (the *what/why*);
 this document is the *what's actually built* (the *how*, and where it
-deviates from spec). Written at the M4 checkpoint, updated at the M5 and M6
-checkpoints. Read "Critical: a real timezone bug affected all data before
+deviates from spec). Written at the M4 checkpoint, updated at the M5, M6, and
+M7 (pre-work) checkpoints. Read "Critical: a real timezone bug affected all data before
 this point" before trusting any date in an earlier report (trade dates,
 trigger dates, etc.) — the underlying OHLCV values and all numeric results
 were never wrong, only date labels.
@@ -27,6 +27,15 @@ were never wrong, only date labels.
   now runs end-to-end and produces a real (if thin) result: 0 trades over
   1252 trading days / 128 symbols, root-caused (not just reported) via
   direct gate-pass-rate/watchlist-state inspection.
+- **M7 (in progress): pre-work complete, study-suite build pending a
+  decision.** Fixed the ADV-gate cadence bug found during M6 and built a
+  committed full-universe gate-pass-rate/watchlist-state audit tool (190
+  tests total). Real result: the fix alone moved the backtest from 0 to 3
+  LONG trades — confirmed confluence rarity generalizes across the full
+  universe, and found that 100% of realized trades enter via the 04 §6
+  trigger-bypass path, never the "own dip" state machine. See "M7
+  pre-work..." section below for full detail and the resulting decision
+  point on how to proceed before building the 08 §3 study suite.
 
 ## TL;DR
 
@@ -1019,7 +1028,12 @@ rather than repeated here.
     confluence rarity M3.5 found at D1 is the dominant story here, not this one gate. See "Real
     backtest run" in the M6 section above for the full per-gate breakdown and the watchlist-state
     confirmation (6 of 7 sampled symbols never left `IDLE`, the 7th reached `QUALIFIED` but never
-    `DIP_ARMED`/`ENTRY_EVAL`, over the full 5-year window).
+    `DIP_ARMED`/`ENTRY_EVAL`, over the full 5-year window). **RESOLVED (`commit ad2ee2b`/`b2b6eaa`)**
+    -- `gate_adv` now accepts a precomputed `adv` series, threaded through as `adv20_native` from
+    `_prepare_m5`. Full-universe `adv` pass rate post-fix: mean 94.0%, min 1.2% (see "M7
+    pre-work..." section below). Confirmed real, non-cosmetic effect: the fix alone moved the real
+    backtest from 0 to 3 trades. Confluence rarity across the *other* 8 gates remains the dominant
+    story, exactly as predicted here.
 17. 07 §6's kill switches (broker/data-feed-error entry halts) are not implemented -- a
     live-trading-only concern, does not apply to historical backtesting, not planned for any
     future milestone unless live trading is pursued.
@@ -1071,37 +1085,104 @@ rather than repeated here.
     larger sample surfaces trades: this bug would silently work against exactly that goal for the
     newly-added thin symbols.
 
-## Next: M7 (full validation study suite + reporting)
+## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
-M6's engine and algo code are built, unit tested (182 tests), reviewed, and now confirmed to run
-end-to-end against real data (both blocking crashes from item #16/#14 above are fixed). But the
-real result is **0 trades over 1252 trading days / 128 symbols** -- the same shape of problem M3.5
-hit at D1 (see that section above), just apparently more severe at M5 cadence per the diagnostic in
-the M6 section above (0.00-0.02% joint gate-pass rate across every sampled symbol, vs. D1's
-~0.83%). **Getting M6 to produce a non-trivial trade log is now M7's necessary first step**, not a
-nice-to-have: none of the validation studies below can produce meaningful output studying an empty
-trade log, the same conclusion M3.5 reached before it expanded the D1 universe from 28 to 130
-symbols. Concretely, before running the studies below, M7 should:
+Before starting the studies suite, M7 first did the two prerequisite steps this file's prior
+"Next: M7" section called for -- fixing the known-limitation #16 ADV-gate cadence bug and
+building a committed, full-universe version of the M6 diagnostic -- to find out whether M6's
+0-trade result was fixable with a real bug fix, or was purely a confluence-rarity finding. Both
+were done via the same implementer + task-reviewer workflow used throughout this project.
 
-- Extend the diagnostic done for this task (`.superpowers/sdd/task9_diagnostic.py`, not committed)
-  into a proper, committed gate-pass-rate/watchlist-state audit across the full 128-symbol
-  universe (not just the 7-symbol sample used here) to confirm the confluence-rarity finding
-  generalizes, the same way M3.5's universe-expansion step reconfirmed its own diagnosis at scale.
-- Fix known limitation #16's ADV-gate cadence mismatch (`gate_adv` should consume the
-  already-computed `adv20_native` daily-cadence series, not raw M5-bar volume) -- confirmed not the
-  dominant cause of 0 trades, but a real miscalibration worth fixing on its own merits before it
-  contaminates any ablation study that includes G1.
-- Only then decide whether the M3.5 playbook (expand the universe further, e.g. toward the real
-  spec's 800-1,500-symbol scan) is the right next lever, or whether the M5 gate/threshold set
-  itself (9 hard gates vs. D1's 7, several inherited as-is from D1 without an M5-specific
-  recalibration pass) needs loosening first -- the joint-pass-rate gap vs. D1 is much larger than
-  the ~4.6x universe expansion that fixed D1's 0-trade result, so universe expansion alone may not
-  be enough this time.
+**Fix: `gates.py::gate_adv` M5-cadence mismatch** (commits `ad2ee2b`, `b2b6eaa`, review clean,
+first pass). `gate_adv` gained an optional `adv: pd.Series | None` parameter that, when given, is
+compared directly against the threshold instead of recomputing `df["volume"].rolling(20).mean()`
+-- the fix that was needed, since that rolling mean is a genuine 20-day ADV when `df` is D1 bars
+(the D1 walking skeleton's usage, left untouched by the `None` default) but only a ~100-minute
+average of 5-minute-bar volume when `df` is M5 bars. `adv20` is threaded through
+`gates_pass_long`/`gates_pass_short`/`gates_pass_long_m5`/`gates_pass_short_m5`, and
+`backtest/engine_m5.py`'s `_prepare_m5` now passes its own already-computed `adv20_native` series
+into both M5 gate calls. The reviewer independently bug-injected the pre-fix code (confirms the
+new tests fail without the fix) and a "half-fix" that accepts-but-ignores the `adv` parameter
+(confirms the tests aren't vacuous). 185/185 passing after this fix.
 
-Once a real, non-trivial M6 trade log exists, M7's job is algo-spec 08 §3's full validation study
-suite, run at true M5 cadence (the D1-cadence versions of these same studies were already built and
-run during M3.5 -- see `backtest/studies/` and the "M3.5 status"/"Universe expansion" sections
-above for that precedent and its real findings):
+**New tool: `backtest/studies/gate_audit_m5.py` + `scripts/audit_gate_pass_rates.py`** (commits
+`5dc75b0`, `05363ce`, review clean, first pass). Extends the M6 diagnostic
+(`.superpowers/sdd/task9_diagnostic.py`, a 7-symbol scratch script, never committed) into a
+committed, reusable tool: `symbol_gate_rates` (per-gate + joint pass rates, long and short, on a
+symbol's native M5 index) and `symbol_watchlist_reach` (independent per-symbol watchlist-state-machine
+simulation), run across the full universe by `run_gate_pass_audit`, with a thin typer CLI writing
+CSVs to `reports/gate_audit/`. The reviewer hand-recomputed the gate-rate test fixture's
+percentages against `gates.py`'s real thresholds, hand-traced the watchlist-state test bar-by-bar
+(including manually deriving `score_long_m5`'s constant value from `scoring.py`'s formula to
+confirm the test's premise), and bug-injected a long/short gate function swap to confirm the
+tests would catch it. 190/190 passing after this tool.
+
+**Real result after the fix: 0 -> 3 trades.** Rerunning `scripts/run_backtest_intraday.py`
+against the same 1252-day/128-symbol window with the ADV-gate fix applied now produces **3 LONG
+trades** (shorts still disabled by default): STZ (2024-01-09, hard stop, -$7.88), ORCL
+(2025-06-12, profit-take, +$149.04), PNC (2026-06-10, hard stop, -$24.33) -- win rate 33%, profit
+factor 4.63, total PnL +$116.82 on $100k starting equity. The bug was real and worth fixing, but
+3 trades over 5 years/128 symbols is nowhere near enough to run any of 08 §3's validation studies
+meaningfully -- confluence rarity, not this bug, remains the dominant story.
+
+**Full-universe audit confirms the 7-symbol finding generalizes, and finds something new.**
+Running `scripts/audit_gate_pass_rates.py` across all 128 symbols (`reports/gate_audit/`):
+
+- Joint gate-pass rate: long mean 0.0145% / median 0.0093% / max 0.0737%; short mean 0.0201% /
+  median 0.0128% / max 0.1125% -- matches the M6 section's 7-symbol sample (0.00-0.02%) closely,
+  confirming the finding generalizes across the full universe, the same "expand and reconfirm"
+  step M3.5 took at D1 cadence.
+- Per-gate breakdown across the universe (mean pass rate) identifies the tightest individual
+  gates: `rrs_m5` 6.3% (tightest by far), `rrs_d1` 18.4%, `ha_cont_d1` 20.3%, `sma_stack` 36.9%,
+  `not_one_candle_wonder` 32.7%, `volume_ratio_d1` 41.0%, `headroom` 50.2%, `vwap` 51.0%; `adv`
+  now averages a healthy 94.0% post-fix (was the M6 section's wildly inconsistent 0.00-56.21%
+  before), `price` 99.7%, `no_gap_exclusion` 99.9% -- confirms G1 (ADV) is no longer a
+  contributor to the bottleneck, and that `rrs_m5`/`rrs_d1`/`ha_cont_d1` are the three tightest
+  hard gates worth the closest look in any future ablation/recalibration study.
+- Watchlist-state reach: 86/128 symbols (long) and 100/128 (short) reach `QUALIFIED` at least
+  once, but **0/128 symbols ever reach `DIP_ARMED` on the long side** (1/128 short -- MSFT, 12
+  bars `QUALIFIED`, 1 bar `DIP_ARMED`, 1 bar `ENTRY_EVAL`, over the full 5-year window).
+- **This audit's 0-long-`DIP_ARMED` finding directly contradicts the 3 real trades existing --
+  investigated, and it's not a bug.** All 3 real trades' entry timestamps land exactly one M5 bar
+  after a `LONG_TRIGGER` fire in `bias/engine.py`'s trigger series (confirmed directly: computed
+  `bias_series` for SPY/QQQ and checked the bar immediately preceding each of the 3 real entries
+  -- all three show `LONG_TRIGGER`, matching `broker_sim.py`'s next-bar-fill convention). That
+  means **100% of realized trades entered via 04 §6's trigger-bypass exception**
+  (`watchlist.apply_trigger_bypass`, called by `run_m5_backtest`'s event loop) -- a `QUALIFIED`
+  symbol jumping straight to `ENTRY_EVAL` on a matching bias-engine trigger bar, never through the
+  normal "own dip" `DIP_ARMED` path this audit's `symbol_watchlist_reach` simulates. The audit
+  tool doesn't call `apply_trigger_bypass` at all, so its `DIP_ARMED`/`ENTRY_EVAL` counts
+  *undercount* real reachability on this axis (opposite of the cross-symbol-ranking omission,
+  which *overcounts* -- see the module's docstring, corrected in commit `2515f78` to state both
+  directions precisely instead of the original one-sided "upper bound" claim). Practically: the
+  real system's only working entry path across the whole universe over 5 years was the
+  market-wide trigger mechanism, not a symbol's own dip-arming -- a materially different, more
+  specific finding than "confluence is rare" alone.
+
+## Decision needed before building the 08 §3 study suite
+
+With only 3 trades, none of the validation studies below can produce anything beyond "not enough
+samples" -- the same wall M3.5 would have hit at 8 D1 trades had it not expanded the universe
+28 -> 130 first. But the joint-pass-rate gap here (~0.01-0.02%) is roughly 40-80x tighter than
+D1's ~0.83% that a ~4.6x universe expansion fixed, so the same lever alone is unlikely to be
+enough this time (already flagged as a risk in the prior version of this section, now confirmed
+with real numbers). Three real options going forward, each a genuine judgment call rather than a
+mechanical next step -- worth a decision before more building happens:
+
+1. **Loosen specific gate thresholds** -- the audit points at `rrs_m5` (6.3%), `rrs_d1` (18.4%),
+   and `ha_cont_d1` (20.3%) as the tightest hard gates; touching these is a real calibration
+   decision (how far, and whether that still honors algo-spec 04/05/06's intent), not a bug fix.
+2. **Expand the universe further** -- toward the spec's originally-envisioned 800-1,500-symbol
+   scan (`01`), following M3.5's precedent, understanding from the numbers above that this alone
+   may not close the gap.
+3. **Proceed to build the 08 §3 study suite now**, on the honest, disclosed 3-trade sample --
+   matching M3.5's own precedent of running studies on a small D1 sample (8 trades) and reporting
+   results as directional, not statistical proof, until a larger sample exists.
+
+Once a real, non-trivial M6 trade log exists (whichever lever produces it), M7's remaining job is
+algo-spec 08 §3's full validation study suite, run at true M5 cadence (the D1-cadence versions of
+these same studies were already built and run during M3.5 -- see `backtest/studies/` and the
+"M3.5 status"/"Universe expansion" sections above for that precedent and its real findings):
 
 - **Rule-count ablation (08 §3.1)** -- extend `backtest/studies/ablation.py` to disable each M5
   hard gate/rule individually (not just the D1 set of {bias, rrs, ha, sma}) and check whether
