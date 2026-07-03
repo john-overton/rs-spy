@@ -1,11 +1,11 @@
-"""D1-available hard gates. algo-spec/04-stock-selection-engine.md §2.
+"""Hard gates. algo-spec/04-stock-selection-engine.md §2.
 
-Restricted subset of the full spec's 9 gates (G1-G9): G2 (M5 RS) and G3
-(VWAP) have no D1 equivalent and are dropped -- RollingRRS_D1 (using the D1
-window, not M5) stands in as the primary qualification signal for this
-walking-skeleton milestone. G9 (QQQ cross-check) is deferred to the M5 full
-engine. G1 (universe: price/ADV/float) is checked dynamically here even
-though the curated universe satisfies it by construction at listing time.
+The D1-cadence gates below (gate_price through gates_pass_short) are the
+restricted subset used by the D1 walking skeleton (M3): G2 (M5 RS) and G3
+(VWAP) have no D1 equivalent there. The M5-cadence additions at the bottom
+(gate_vwap_*, gate_rrs_m5_*, gates_pass_*_m5) complete the full 9-gate set
+(G1-G9) plus 04 §3's anti-pattern exclusions, for use with
+selection/features_m5.py's output.
 """
 import pandas as pd
 
@@ -71,7 +71,7 @@ def gate_earnings(index: pd.DatetimeIndex, blackout_dates: set) -> pd.Series:
 # applied in backtest/engine.py, not a gates.py gate, but shares this set so
 # callers can pass a single `disabled` set through both layers. "rrs" stands
 # in for the spec's VWAP hard rule, per this module's docstring.
-HARD_RULE_NAMES = frozenset({"bias", "rrs", "ha", "sma"})
+HARD_RULE_NAMES = frozenset({"bias", "rrs", "ha", "sma", "rrs_m5", "vwap"})
 
 
 def gates_pass_long(
@@ -125,4 +125,111 @@ def gates_pass_short(
         result &= gate_sma_short(features)
     result &= gate_headroom_short(features, min_headroom_atr)
     result &= gate_volume(features, min_rvol)
+    return result
+
+
+def gate_vwap_long(features: pd.DataFrame) -> pd.Series:
+    return features["close"] > features["vwap_m5"]
+
+
+def gate_vwap_short(features: pd.DataFrame) -> pd.Series:
+    return features["close"] < features["vwap_m5"]
+
+
+def gate_rrs_m5_long(features: pd.DataFrame, threshold: float = 1.0) -> pd.Series:
+    return features["rolling_rrs_m5"] >= threshold
+
+
+def gate_rrs_m5_short(features: pd.DataFrame, threshold: float = -1.0) -> pd.Series:
+    return features["rolling_rrs_m5"] <= threshold
+
+
+def gate_not_one_candle_wonder(features: pd.DataFrame) -> pd.Series:
+    """04 §3 anti-pattern: a single M5 bar dominating >60% of the RRS
+    window's price change is excluded until the rolling average confirms."""
+    return ~features["one_candle_wonder"].fillna(False)
+
+
+def gate_no_gap_exclusion(features: pd.DataFrame, max_gap_pct: float = 0.20) -> pd.Series:
+    """04 §3: a >20% open gap is excluded for the day (momentum-gapper
+    regime, out of scope)."""
+    return features["gap_pct"].abs() <= max_gap_pct
+
+
+def gate_benchmark_crosscheck_long(features: pd.DataFrame, threshold: float = 1.0) -> pd.Series:
+    """G9: only meaningful when features_m5.py was given a `qqq_m5` frame
+    (producing `rolling_rrs_m5_qqq`); passes unconditionally otherwise."""
+    col = features.get("rolling_rrs_m5_qqq")
+    if col is None:
+        return pd.Series(True, index=features.index)
+    return col >= threshold
+
+
+def gate_benchmark_crosscheck_short(features: pd.DataFrame, threshold: float = -1.0) -> pd.Series:
+    col = features.get("rolling_rrs_m5_qqq")
+    if col is None:
+        return pd.Series(True, index=features.index)
+    return col <= threshold
+
+
+def gates_pass_long_m5(
+    df: pd.DataFrame,
+    features: pd.DataFrame,
+    earnings_blackout: set | None = None,
+    min_price: float = 10.0,
+    min_adv_shares: float = 1_000_000,
+    rrs_m5_threshold: float = 1.0,
+    rrs_d1_threshold: float = 1.0,
+    min_ha_days: int = 2,
+    min_headroom_atr: float = 1.0,
+    min_rvol: float = 1.0,
+    max_gap_pct: float = 0.20,
+    use_qqq_crosscheck: bool = False,
+    disabled: frozenset = frozenset(),
+) -> pd.Series:
+    """Full 9-gate long-side check (G1-G9) at M5 cadence. `disabled` reuses
+    HARD_RULE_NAMES plus "rrs_m5"/"vwap" for the M3.5-style ablation study
+    when it's extended to M5 in M7."""
+    result = gates_pass_long(
+        df, features, earnings_blackout, min_price, min_adv_shares,
+        rrs_d1_threshold, "rolling_rrs_d1", min_ha_days, min_headroom_atr, min_rvol, disabled,
+    )
+    if "rrs_m5" not in disabled:
+        result &= gate_rrs_m5_long(features, rrs_m5_threshold)
+    if "vwap" not in disabled:
+        result &= gate_vwap_long(features)
+    result &= gate_not_one_candle_wonder(features)
+    result &= gate_no_gap_exclusion(features, max_gap_pct)
+    if use_qqq_crosscheck:
+        result &= gate_benchmark_crosscheck_long(features)
+    return result
+
+
+def gates_pass_short_m5(
+    df: pd.DataFrame,
+    features: pd.DataFrame,
+    earnings_blackout: set | None = None,
+    min_price: float = 10.0,
+    min_adv_shares: float = 1_000_000,
+    rrs_m5_threshold: float = -1.0,
+    rrs_d1_threshold: float = -1.0,
+    min_ha_days: int = 2,
+    min_headroom_atr: float = 1.0,
+    min_rvol: float = 1.0,
+    max_gap_pct: float = 0.20,
+    use_qqq_crosscheck: bool = False,
+    disabled: frozenset = frozenset(),
+) -> pd.Series:
+    result = gates_pass_short(
+        df, features, earnings_blackout, min_price, min_adv_shares,
+        rrs_d1_threshold, "rolling_rrs_d1", min_ha_days, min_headroom_atr, min_rvol, disabled,
+    )
+    if "rrs_m5" not in disabled:
+        result &= gate_rrs_m5_short(features, rrs_m5_threshold)
+    if "vwap" not in disabled:
+        result &= gate_vwap_short(features)
+    result &= gate_not_one_candle_wonder(features)
+    result &= gate_no_gap_exclusion(features, max_gap_pct)
+    if use_qqq_crosscheck:
+        result &= gate_benchmark_crosscheck_short(features)
     return result
