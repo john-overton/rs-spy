@@ -22,7 +22,7 @@ were never wrong, only date labels.
   execution, no position management (that's M6). See "M5:..." section below.
 - **M6: M5-cadence event-driven backtest engine, long/short algo per
   algo-spec 05/06/07 — complete (this checkpoint).** See "M6:..." section
-  below — the engine and algo code are built, unit tested (180 tests), and
+  below — the engine and algo code are built, unit tested (182 tests), and
   reviewed. Two real crashes found on real data are fixed; the real backtest
   now runs end-to-end and produces a real (if thin) result: 0 trades over
   1252 trading days / 128 symbols, root-caused (not just reported) via
@@ -55,7 +55,7 @@ build (see "M5:..." section below) — most notably a genuine 1-minute
 lookahead leak in the M1-to-M5 alignment path. **124 tests passing, lint
 clean** at the M5 checkpoint. **M6 built the actual M5-cadence backtest
 engine and long/short algo** (risk sizing, order-fill simulation,
-entry/exit logic, the bar-by-bar event loop — 180 tests total) and, after
+entry/exit logic, the bar-by-bar event loop — 182 tests total) and, after
 fixing two more real bugs that only real market data exposed (a `pd.NA`
 dtype-upcast crash in shared candle-structure code, and a QQQ/SPY M5
 index-misalignment crash in the bias engine), ran the real thing end-to-end
@@ -588,7 +588,7 @@ It flagged six Minor items worth M6's attention, folded into "Known limitations"
 Built the actual intraday round-trip system on top of M5's engine functions (8
 tasks, subagent-driven development against `docs/superpowers/plans/2026-07-03-m6-backtest-engine.md`,
 progress ledger at `.superpowers/sdd/progress.md`). **All code is written, unit
-tested (180 tests, up from 124 at the M5 checkpoint), and independently
+tested (182 tests, up from 124 at the M5 checkpoint), and independently
 reviewed.** Two real, blocking crashes were found and fixed running the first
 real-data backtests (see "Real bugs found and fixed" below); with both fixed,
 **a real, complete M6 backtest now runs end-to-end against the full cached
@@ -913,6 +913,23 @@ sma} set it currently ablates, per Known limitation #5) is real, concrete,
 un-started M7 work, not yet done here — see "Known limitations" item 16 and
 "Next: M7" below.
 
+**Final whole-branch review (opus, range `a28bca7..d7a4571`, 18 commits)**: came
+back **"Ready to move to M7: Yes, with caveats,"** no unresolved Critical findings.
+Independently re-traced the position-management rule order on both books against
+the plan's Global Constraints (confirmed correct) and specifically stress-tested
+whether anything in the wiring — not just gate confluence — could produce a false
+zero-trade result; found none (the pipeline is proven live by a green end-to-end
+entry→fill→trail→exit test, and every prepared series shares one calendar index
+with no off-by-one). One finding it raised (the 10:15 ET entry-window lower bound
+looked unenforced in `engine_m5.py` since no literal `10:15` constant appears in
+that file) was checked and confirmed a false positive: `in_entry_window` composes
+`bias_df["warmup"]` (`~warmup` = at/after 10:15 ET, defined via `WARMUP_CUTOFF` in
+`bias/engine.py`) with the 15:30 cutoff, and an empirical check confirms the
+resulting window is exactly 10:15-15:30 ET. Two genuine Minor findings — a stale
+"180 tests" count (now corrected to 182 throughout this document) and the dip-arm
+cross-detection edge case — are folded into "Known limitations" below (item 23)
+rather than repeated here.
+
 ## Known limitations / open risks (unchanged from the plan except where noted)
 
 1. IEX vs. consolidated-tape data divergence -- see deviation #5 above; larger than "minor" for
@@ -1037,10 +1054,26 @@ un-started M7 work, not yet done here — see "Known limitations" item 16 and
     inline instead, so a typo introduced directly in the script file would not be caught by the
     test suite. Minor, pre-existing in the Task 7 brief, not an implementer fault; not blocking,
     but worth tightening before relying on this test as a safety net for script-level changes.
+23. **Found during the final whole-branch review, minor, does not affect the 0-trade result:**
+    `run_m5_backtest`'s dip-arm cross detection (`rrs_prev`/`lrsi_prev` via `.iat[i-1]` on the
+    *reindexed* `features` frame, `engine_m5.py` ~L466-469) is the one exit/entry-signal series in
+    the event loop computed on reindexed data rather than following this milestone's own
+    native-first-then-reindex-last convention (every other cross series --
+    `rs_failure_long/short`, `vwap_loss_long/short`, `momentum_stall_long/short` -- is computed on
+    each symbol's native M5 index in `_prepare_m5`, then reindexed). Consequence: for a thin/gappy
+    symbol whose immediately-preceding master-calendar bar has no native data (a real, anticipated
+    scenario for less-liquid IEX-fed names -- see deviation #10), the RRS/LRSI "previous" value
+    reads NaN and the crossing comparison silently evaluates `False`, suppressing that bar's
+    dip-arm advancement rather than comparing against the symbol's own last real prior reading.
+    Confirmed to have no effect on the real 0-trade result documented above (the sampled
+    large-cap/liquid names have effectively continuous M5 coverage), but worth fixing -- or at
+    least being aware of -- before M7 expands the universe to thinner names specifically hoping a
+    larger sample surfaces trades: this bug would silently work against exactly that goal for the
+    newly-added thin symbols.
 
 ## Next: M7 (full validation study suite + reporting)
 
-M6's engine and algo code are built, unit tested (180 tests), reviewed, and now confirmed to run
+M6's engine and algo code are built, unit tested (182 tests), reviewed, and now confirmed to run
 end-to-end against real data (both blocking crashes from item #16/#14 above are fixed). But the
 real result is **0 trades over 1252 trading days / 128 symbols** -- the same shape of problem M3.5
 hit at D1 (see that section above), just apparently more severe at M5 cadence per the diagnostic in
