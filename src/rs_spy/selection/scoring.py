@@ -23,6 +23,12 @@ implemented (base HA-continuation-length scoring only). W7's "lowest tercile
 of candidates" is cross-sectional (needs the whole candidate pool at once);
 this reuses the same per-symbol continuous-std formula the D1 W7 already
 uses, rather than introducing an unrelated cross-sectional ranking API here.
+W4's "(or holding flat, RRS >= 2)" alternate path to the full 15-point bonus
+is also not implemented -- only the primary "stock moves opposite the market"
+divergence path scores the full bonus; a flat-price/high-RRS candidate only
+gets the proportional (up to ~8 pt) score. Flagged during Task 7's review;
+deferred as a third documented simplification rather than adding a "flat"
+threshold with no clean spec-given definition of "flat."
 """
 import numpy as np
 import pandas as pd
