@@ -44,6 +44,15 @@ def load_universe_minute_bars(
     return {sym: load_minute_bars(con, sym, rth_only=rth_only) for sym in symbols}
 
 
+def load_universe_m1_bars(
+    con: duckdb.DuckDBPyConnection, symbols: list[str], rth_only: bool = True
+) -> dict[str, pd.DataFrame]:
+    """Alias of load_universe_minute_bars -- named to match load_universe_m5_bars'
+    "m1"/"m5" naming for callers (backtest/engine_m5.py) that need both cadences
+    side by side and read more clearly with parallel names."""
+    return load_universe_minute_bars(con, symbols, rth_only=rth_only)
+
+
 def load_m5_bars(con: duckdb.DuckDBPyConnection, symbol: str, rth_only: bool = True) -> pd.DataFrame:
     """True 5-minute bars, built by resampling the warehouse's raw 1-minute
     bars (see data/resample.py for why this step exists -- the spec's "M5"
