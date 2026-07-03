@@ -13,3 +13,5 @@ htmlcov/
 data/*.duckdb
 data/*.duckdb.wal
 reports/
+
+.DS_Store
