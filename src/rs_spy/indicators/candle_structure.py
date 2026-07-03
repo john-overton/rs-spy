@@ -25,13 +25,20 @@ def stacked_count(
     min_body_pct: float = 0.6,
     min_volume_ratio: float = 1.2,
     volume_lookback: int = 20,
+    volume_ratio: pd.Series | None = None,
 ) -> pd.Series:
-    """Signed count of consecutive same-direction "conviction" days: same
-    direction close, body >= min_body_pct of range, volume_ratio >= threshold."""
+    """Signed count of consecutive same-direction "conviction" bars: same
+    direction close, body >= min_body_pct of range, volume_ratio >= threshold.
+
+    `volume_ratio`, if given, is used in place of this module's own
+    volume_ratio_d1 -- e.g. the M5 bias engine (bias/engine.py) passes the
+    time-of-day-adjusted RVOL from indicators/rvol.py, per this module's
+    docstring ("stands in for the full ... RVOL ... (M5, built in M5
+    milestone)"). D1 callers (bias/engine_d1.py, backtest/engine.py) omit it
+    and keep the original volume_ratio_d1 behavior."""
     direction = (df["close"] > df["open"]).astype(int) - (df["close"] < df["open"]).astype(int)
-    qualifies = (body_pct(df) >= min_body_pct) & (
-        volume_ratio_d1(df, lookback=volume_lookback) >= min_volume_ratio
-    )
+    vol_ratio = volume_ratio if volume_ratio is not None else volume_ratio_d1(df, lookback=volume_lookback)
+    qualifies = (body_pct(df) >= min_body_pct) & (vol_ratio >= min_volume_ratio)
     signed = direction.where(qualifies, 0)
 
     streak = []
