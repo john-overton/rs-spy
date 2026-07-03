@@ -558,6 +558,14 @@ silently approximate" norm — see `selection/scoring.py`'s module docstring):**
 - News-halt anti-pattern exclusion (04 §3) is not implemented — there is no live halt feed available
   for backtesting against historical Alpaca bars.
 
+**Final whole-branch review (after all 9 tasks + fixes were individually approved)**: a
+cross-cutting review across the full M5 diff (dispatched separately from the per-task reviews,
+specifically to catch anything only visible at the whole-milestone level — e.g. was the
+lookahead fix applied consistently everywhere it needed to be, not just in the one file where it
+was first found) came back **"Ready to move to M6: Yes"**, no Critical or Important findings.
+It flagged six Minor items worth M6's attention, folded into "Known limitations" below
+(items 12-15) rather than repeated here.
+
 ## Known limitations / open risks (unchanged from the plan except where noted)
 
 1. IEX vs. consolidated-tape data divergence -- see deviation #5 above; larger than "minor" for
@@ -602,6 +610,29 @@ silently approximate" norm — see `selection/scoring.py`'s module docstring):**
     continuously, per spec; blackout is an entry-gating concern for M6's algo layer, not an engine
     output) -- M6 needs to add this gate before real entries are evaluated around scheduled events
     (FOMC, CPI, etc.).
+12. **M5's volume *gate* (`gates.py::gate_volume`, reused inside `gates_pass_long_m5`/`_short_m5`)
+    still checks D1's `volume_ratio_d1`, not the new intraday `rvol_m5`** -- `rvol_m5` currently
+    only feeds `scoring.py`'s W5 weight, not any G-series hard gate. This may be intentional (the
+    D1 "hard rule" volume filter carried forward as-is into M5), but it means the gate doesn't use
+    intraday relative volume at all. Confirm against algo-spec 04 §2 before M6 relies on this gate,
+    and document the decision either way alongside the M5 scoring simplifications above.
+13. **`compute_raw_score`'s M5 ATR-14, trendlines, and candle-structure metrics run on the
+    continuous, concatenated cross-session M5 series** (mirroring the D1 engine's own treatment),
+    so an overnight gap enters true-range/pivot-detection math like any other bar-to-bar move. Not
+    wrong, and internally consistent with the D1 precedent, but a genuine intraday subtlety worth
+    M6 knowing about before trusting trigger/breach sensitivity right around a session's open.
+14. **`bias/engine.py`'s docstring documents `qqq_m5` must share `spy_m5`'s index, but nothing
+    enforces this at runtime** -- unlike D1 daily bars (which always share a trading calendar),
+    intraday SPY/QQQ M5 indices can in principle diverge on a coverage gap. Both are highly liquid
+    so the practical risk is low, but M6's real pipeline wiring should add an explicit alignment
+    step/assertion rather than relying on the docstring precondition alone.
+15. Two different RVOL computation paths exist in the M5 code and are correct-but-worth-noting:
+    `features_m5.py` computes RVOL on 1-minute bars then aligns onto M5 (per 02 §3/4's literal
+    "1-min bars" language), while `bias/engine.py` computes it directly on M5 bars. Because
+    `rvol()` is session-*cumulative* volume vs. a same-clock-time baseline, both approaches yield
+    the same result for liquid symbols (SPY/QQQ) -- confirmed not a bug or inconsistency during the
+    final whole-branch review -- but a future reader could mistake this for drift and "fix" one to
+    match the other. Worth a one-line code comment noting the equivalence explicitly.
 
 ## Next: M6 (event-driven M5 backtest engine + long/short algo)
 
