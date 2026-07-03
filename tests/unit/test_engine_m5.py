@@ -80,6 +80,54 @@ def test_flat_market_stays_neutral():
     assert (out["bias"].dropna() == NEUTRAL).mean() > 0.5
 
 
+def test_c8_survives_qqq_m5_index_genuinely_different_from_spy_m5():
+    """Regression test for a real-market crash found while running M6's real
+    backtest against the 5-year warehouse (128 symbols): c8 (QQQ agreement)
+    computed `qqq_diff_pct = (qqq_m5["close"] - qqq_vwap) / qqq_vwap` without
+    ever reindexing `qqq_m5["close"]` onto `spy_m5.index` first (unlike
+    `qqq_vwap`, which IS correctly aligned via `align_causal`). Every fixture
+    in this file's `_build` helper works around this by pre-reindexing/ffill
+    QQQ's M5 bars onto SPY's M5 index before ever calling `compute_raw_score`
+    -- and the docstring's "`qqq_m5` must share `spy_m5`'s index" contract
+    was never enforced at runtime (flagged as a known limitation in M5's
+    final review; see IMPLEMENTATION.md). On real market data QQQ and SPY's
+    M5 bars are NOT identical (each can be missing bars the other has), so
+    the raw pandas subtraction auto-aligns onto the UNION of both indices,
+    `qqq_above = qqq_diff_pct > 0` ends up on that mismatched union index,
+    and `spy_above == qqq_above` (strict equality between differently-indexed
+    Series) raises `ValueError: Can only compare identically-labeled Series
+    objects`.
+
+    This builds a QQQ M5 index that is genuinely different from SPY's in
+    both directions: missing several bars SPY has, AND carrying one
+    timestamp SPY does NOT have (mirroring how two independently-traded real
+    symbols' M5 bars can each be missing bars relative to the other,
+    depending on real trade timing) -- so the union of the two indices is
+    not just a superset/subset of either, which is exactly what triggers the
+    ValueError above (a pure subset does not: pandas' auto-align union
+    collapses back to spy_m5.index in that case, and the comparison
+    silently "works" with NaN values, masking the bug)."""
+    spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5_aligned = _build(n_sessions=5, bars_per_session=78, spy_drift=0.01)
+    # _build() already reindexed/ffill'd qqq_m5 onto spy_m5.index -- undo that
+    # here and instead pass QQQ's genuinely different native M5 index.
+    qqq_m5_native = _m5_from_m1(qqq_m1)
+    qqq_m5 = qqq_m5_native.drop(qqq_m5_native.index[10:15])  # QQQ missing 5 bars SPY has
+    extra_ts = spy_m5.index[20] + pd.Timedelta(minutes=1)  # a QQQ bar timestamp SPY does NOT have
+    extra_row = qqq_m5_native.iloc[[20]].copy()
+    extra_row.index = pd.DatetimeIndex([extra_ts])
+    qqq_m5 = pd.concat([qqq_m5, extra_row]).sort_index()
+
+    assert not qqq_m5.index.equals(spy_m5.index), "fixture bug: qqq_m5 must have a genuinely different index"
+
+    out = compute_raw_score(spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5)  # must not raise
+    assert out["c8"].index.equals(spy_m5.index)
+    assert out["c8"].isin([10.0, -10.0]).all()
+
+    # bias_series (the higher-level entry point used by the real backtest)
+    # must also run cleanly end-to-end.
+    bias_series(spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5)
+
+
 def test_vwap_side_does_not_leak_the_next_minute_bar():
     # Regression test for a lookahead bug found while building Task 4
     # (selection/features_m5.py): M1 bars are open-labeled, M5 bars are

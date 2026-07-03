@@ -61,8 +61,10 @@ def compute_raw_score(
     qqq_m1: pd.DataFrame,
     qqq_m5: pd.DataFrame,
 ) -> pd.DataFrame:
-    """`qqq_m5` must share `spy_m5`'s index. Returns c1..c8, raw_score
-    (clamped to [-100,100]), and `warmup`."""
+    """`qqq_m5` need not share `spy_m5`'s index -- QQQ's M5 close is
+    explicitly reindexed onto `spy_m5.index` before use (see c8 below), so a
+    real-market gap in QQQ's bars degrades gracefully rather than crashing.
+    Returns c1..c8, raw_score (clamped to [-100,100]), and `warmup`."""
     spy_vwap_m1 = _close_label(vwap_fn(spy_m1))
     spy_vwap = align_causal(spy_vwap_m1, spy_m5.index)
     vwap_diff_pct = (spy_m5["close"] - spy_vwap) / spy_vwap
@@ -119,7 +121,17 @@ def compute_raw_score(
 
     qqq_vwap_m1 = _close_label(vwap_fn(qqq_m1))
     qqq_vwap = align_causal(qqq_vwap_m1, spy_m5.index)
-    qqq_diff_pct = (qqq_m5["close"] - qqq_vwap) / qqq_vwap
+    # qqq_m5 is not guaranteed to share spy_m5's index on real market data
+    # (each symbol's M5 bars can be missing bars the other has, depending on
+    # real trade timing) -- reindex qqq_m5["close"] onto spy_m5.index first,
+    # same pattern as selection/features_m5.py's spy_close_aligned, so this
+    # subtraction can't silently auto-align onto the union of both indices
+    # and desync qqq_above from spy_above below. A strict `.reindex` (never
+    # `.ffill()`) is intentional: at a spy_m5 bar QQQ has no native bar for,
+    # qqq_diff_pct is NaN, qqq_above is False, and c8 falls back to "QQQ
+    # disagrees" rather than crashing or defaulting to "agrees."
+    qqq_close_aligned = qqq_m5["close"].reindex(spy_m5.index)
+    qqq_diff_pct = (qqq_close_aligned - qqq_vwap) / qqq_vwap
     spy_above = vwap_diff_pct > 0
     qqq_above = qqq_diff_pct > 0
     c8 = pd.Series(0.0, index=spy_m5.index)
