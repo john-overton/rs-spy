@@ -43,40 +43,40 @@ def test_confirm_trigger_entry_long_requires_all_three_conditions():
 
 
 def test_dip_quality_pass_long_passes_a_healthy_mixed_low_volume_pullback():
-    idx = _idx(6)
+    idx = _idx(7)
     df_m5 = pd.DataFrame(
         {
-            "open": [110, 109, 108.5, 108, 108.2, 108.5],
-            "high": [111, 109.5, 109, 108.5, 108.8, 109],
-            "low": [109, 108, 107.5, 107.5, 107.8, 108],
-            "close": [109.5, 108.5, 108, 108.3, 108.5, 108.8],
-            "volume": [1000] * 6,
+            "open": [112, 110, 109, 108.5, 108, 108.2, 108.5],
+            "high": [113, 111, 109.5, 109, 108.5, 108.8, 109],
+            "low": [111, 109, 108, 107.5, 107.5, 107.8, 108],
+            "close": [111, 109.5, 108.5, 108, 108.3, 108.5, 108.8],
+            "volume": [1000] * 7,
         },
         index=idx,
     )
     features = pd.DataFrame(
-        {"rvol_m5": [0.6, 0.6, 0.5, 0.6, 0.6, 0.6], "vwap_m5": [107.0] * 6},
+        {"rvol_m5": [0.6, 0.6, 0.6, 0.5, 0.6, 0.6, 0.6], "vwap_m5": [107.0] * 7},
         index=idx,
     )
-    atr = pd.Series([2.0] * 6, index=idx)
+    atr = pd.Series([2.0] * 7, index=idx)
     result = dip_quality_pass_long(df_m5, features, atr)
     assert result.iloc[-1]
 
 
 def test_dip_quality_pass_long_fails_on_stacked_red_heavy_volume():
-    idx = _idx(6)
+    idx = _idx(7)
     df_m5 = pd.DataFrame(
         {
-            "open": [110, 109, 108, 107, 106, 105],
-            "high": [110.1, 109.1, 108.1, 107.1, 106.1, 105.1],
-            "low": [108.9, 107.9, 106.9, 105.9, 104.9, 103.9],
-            "close": [109, 108, 107, 106, 105, 104],
-            "volume": [1000] * 6,
+            "open": [111, 110, 109, 108, 107, 106, 105],
+            "high": [111.5, 110.1, 109.1, 108.1, 107.1, 106.1, 105.1],
+            "low": [110, 108.9, 107.9, 106.9, 105.9, 104.9, 103.9],
+            "close": [111, 109, 108, 107, 106, 105, 104],
+            "volume": [1000] * 7,
         },
         index=idx,
     )
-    features = pd.DataFrame({"rvol_m5": [2.0] * 6, "vwap_m5": [107.0] * 6}, index=idx)
-    atr = pd.Series([1.0] * 6, index=idx)
+    features = pd.DataFrame({"rvol_m5": [2.0] * 7, "vwap_m5": [107.0] * 7}, index=idx)
+    atr = pd.Series([1.0] * 7, index=idx)
     result = dip_quality_pass_long(df_m5, features, atr)
     assert not result.iloc[-1]
 

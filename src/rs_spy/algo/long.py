@@ -57,17 +57,17 @@ def dip_quality_pass_long(df_m5: pd.DataFrame, features: pd.DataFrame, atr_m5: p
     """05 §3's dip-quality reconfirmation (see module docstring for the
     prose->indicator translation).
 
-    chop_ratio's own rolling(window) is over candle_structure.overlap_ratio,
-    which itself needs one prior bar (shift(1)) to produce a value -- so a
-    `window`-bar chop_ratio window needs window+1 raw bars before it's
-    non-NaN. A `window`-bar pullback only ever contains window-1
-    consecutive-bar pairs, so window-1 is what's actually available and
-    used here; using `window` itself would make this check permanently NaN
-    (-> always fillna'd to False) for any pullback exactly `window` bars
-    long.
+    chop_ratio's rolling(window) is over candle_structure.overlap_ratio,
+    which itself needs one prior bar (shift(1)) to produce a value. Like all
+    rolling-window indicators in this codebase (ATR, SMA, stacked_count), a
+    `window`-bar chop_ratio window requires window bars of real prior history
+    before producing a non-NaN value. In production, df_m5 always has trading
+    history before any pullback, so this resolves normally. Test fixtures with
+    insufficient prior history should have extra leading bars added to provide
+    proper warmup, not have the window decreased.
     """
     window = DIP_PULLBACK_WINDOW
-    cr = chop_ratio(df_m5, window=window - 1)
+    cr = chop_ratio(df_m5, window=window)
     sc = stacked_count(df_m5, volume_ratio=features["rvol_m5"])
     rvol_avg = features["rvol_m5"].rolling(window).mean()
     local_high = df_m5["high"].rolling(window).max()
