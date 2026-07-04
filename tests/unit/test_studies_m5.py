@@ -4,7 +4,9 @@ import pytest
 
 from rs_spy.backtest.engine_m5 import BacktestConfigM5, _prepare_m5, run_m5_backtest
 from rs_spy.backtest.studies.ablation_m5 import HARD_RULES_M5, _score_trades, run_gate_ablation_m5
+from rs_spy.backtest.studies.bias_confusion_m5 import run_bias_confusion_m5
 from rs_spy.backtest.studies.rrs_sensitivity_m5 import THRESHOLDS, WINDOWS, run_rrs_sensitivity_m5
+from rs_spy.backtest.studies.time_of_day_m5 import run_time_of_day_regime_slice_m5
 from rs_spy.backtest.studies.walk_away_m5 import _walk_away_rows, run_walk_away_m5
 from rs_spy.bias.buckets import BULL
 
@@ -238,3 +240,59 @@ def test_run_rrs_sensitivity_m5_sweeps_every_combination(small_universe):
     assert set(sweep["threshold"]) == set(THRESHOLDS)
     for col in ("overall_n_trades", "long_n_trades", "short_n_trades"):
         assert col in sweep.columns
+
+
+def test_run_bias_confusion_m5_returns_contingency_table_and_hit_rates(small_universe):
+    u = small_universe
+    result = run_bias_confusion_m5(u["spy_m1"], u["spy_m5"], u["spy_d1"], u["qqq_m1"], u["qqq_m5"])
+    assert "contingency" in result and "hit_rates" in result
+    assert set(result["hit_rates"].keys()) == {"STRONG_BULL", "BULL", "STRONG_BEAR", "BEAR", "NEUTRAL"}
+    for rate in result["hit_rates"].values():
+        assert rate is None or 0.0 <= rate <= 1.0
+
+
+def test_run_bias_confusion_m5_hit_rate_is_hand_computable_on_a_synthetic_uptrend():
+    # A monotonically rising SPY series should show a high "hit rate" for BULL/STRONG_BULL
+    # buckets predicting UP -- a loose but real sanity check the classification math is right
+    # (not just structurally present).
+    from rs_spy.data.resample import resample_ohlcv
+
+    up_dates = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-02-02", periods=15)]
+    spy_m1 = _build_m1(up_dates, drift=0.01, seed=10)  # strong, steady uptrend
+    qqq_m1 = _build_m1(up_dates, drift=0.01, seed=11)
+    spy_m5, qqq_m5 = resample_ohlcv(spy_m1, "5min"), resample_ohlcv(qqq_m1, "5min")
+    spy_d1, _qqq_d1 = _build_d1(spy_m1), _build_d1(qqq_m1)
+
+    result = run_bias_confusion_m5(spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5, horizon_bars=6)
+    bull_rate = result["hit_rates"]["BULL"]
+    strong_bull_rate = result["hit_rates"]["STRONG_BULL"]
+    # At least one bull-family bucket must have actually occurred and shown a majority-UP
+    # hit rate in a steady uptrend -- if both are None, the bias engine never left NEUTRAL on
+    # this fixture and the test's premise (a real uptrend) has failed, which is itself worth
+    # surfacing as a test failure rather than silently passing.
+    assert (bull_rate is not None and bull_rate > 0.5) or (strong_bull_rate is not None and strong_bull_rate > 0.5)
+
+
+def test_run_time_of_day_regime_slice_m5_buckets_by_session_time_and_regime():
+    trades = pd.DataFrame([
+        {"symbol": "AAPL", "direction": "LONG", "entry_time": pd.Timestamp("2026-02-02 14:35:00", tz="UTC"), "pnl": 100.0},  # 09:35 ET -> OPEN
+        {"symbol": "MSFT", "direction": "LONG", "entry_time": pd.Timestamp("2026-02-02 17:00:00", tz="UTC"), "pnl": -50.0},  # 12:00 ET -> MIDDAY
+        {"symbol": "AMD", "direction": "SHORT", "entry_time": pd.Timestamp("2026-02-02 20:00:00", tz="UTC"), "pnl": 30.0},  # 15:00 ET -> CLOSE
+    ])
+    regime = pd.Series(
+        ["TREND_UP"] * 3,
+        index=pd.date_range("2026-02-02 14:30", periods=3, freq="5min", tz="UTC"),
+    )
+    # asof needs an index that actually spans the trade timestamps -- build a longer one.
+    regime = pd.Series("CHOP", index=pd.date_range("2026-02-02 14:30", "2026-02-02 21:00", freq="5min", tz="UTC"))
+
+    summary = run_time_of_day_regime_slice_m5(trades, regime)
+    assert set(summary["time_of_day"]) == {"OPEN", "MIDDAY", "CLOSE"}
+    assert (summary["regime"] == "CHOP").all()
+    assert summary["n_trades"].sum() == 3
+
+
+def test_run_time_of_day_regime_slice_m5_handles_empty_trades():
+    empty = pd.DataFrame(columns=["symbol", "direction", "entry_time", "pnl"])
+    summary = run_time_of_day_regime_slice_m5(empty, pd.Series(dtype=object))
+    assert summary.empty
