@@ -3,7 +3,7 @@
 Status snapshot for resuming work. Specs live in `algo-spec/` (the *what/why*);
 this document is the *what's actually built* (the *how*, and where it
 deviates from spec). Written at the M4 checkpoint, updated at the M5, M6, and
-M7 (pre-work) checkpoints. Read "Critical: a real timezone bug affected all data before
+M7 checkpoints. Read "Critical: a real timezone bug affected all data before
 this point" before trusting any date in an earlier report (trade dates,
 trigger dates, etc.) — the underlying OHLCV values and all numeric results
 were never wrong, only date labels.
@@ -27,15 +27,17 @@ were never wrong, only date labels.
   now runs end-to-end and produces a real (if thin) result: 0 trades over
   1252 trading days / 128 symbols, root-caused (not just reported) via
   direct gate-pass-rate/watchlist-state inspection.
-- **M7 (in progress): pre-work complete, study-suite build pending a
-  decision.** Fixed the ADV-gate cadence bug found during M6 and built a
-  committed full-universe gate-pass-rate/watchlist-state audit tool (190
-  tests total). Real result: the fix alone moved the backtest from 0 to 3
-  LONG trades — confirmed confluence rarity generalizes across the full
-  universe, and found that 100% of realized trades enter via the 04 §6
-  trigger-bypass path, never the "own dip" state machine. See "M7
-  pre-work..." section below for full detail and the resulting decision
-  point on how to proceed before building the 08 §3 study suite.
+- **M7: full validation study suite (08 §3), M5 cadence — complete (this
+  checkpoint), pending final whole-branch review.** Pre-work fixed the
+  ADV-gate cadence bug found during M6 (0 → 3 real trades) and built a
+  committed full-universe gate-pass-rate/watchlist-state audit tool. Built
+  and ran the full 5-study suite (ablation, walk-away, RRS sensitivity,
+  bias confusion matrix, time-of-day/regime slicing) against the real
+  3-trade sample, per the user's explicit direction to proceed rather than
+  first expand the universe or loosen gates. Real, actionable finding: the
+  RRS sensitivity sweep found `rrs_m5_window=18` produces 10 trades (vs. 3
+  at the spec default of 12) — see "M7: full validation study suite" section
+  below for the complete results and interpretation. Test suite: 202 tests.
 
 ## TL;DR
 
@@ -1084,6 +1086,30 @@ rather than repeated here.
     least being aware of -- before M7 expands the universe to thinner names specifically hoping a
     larger sample surfaces trades: this bug would silently work against exactly that goal for the
     newly-added thin symbols.
+24. **`scripts/run_validation_studies.py`'s "shared baseline" doesn't fully eliminate the
+    redundant precompute** (found during the M7 study-suite's Task 6 review) -- the script calls
+    `_prepare_m5` explicitly to get `baseline_prepared`, then calls `run_m5_backtest` with the same
+    arguments right after, but `run_m5_backtest` has no parameter to accept an already-built
+    `PreparedM5` and always recomputes one internally. So the baseline's expensive per-symbol
+    precompute genuinely runs twice (once wasted) rather than once. Not a correctness bug -- just
+    one extra ~15-20 minute run out of the suite's ~17 total. Fixing this cleanly needs a small,
+    additive `run_m5_backtest(..., prepared: PreparedM5 | None = None)` parameter in
+    `engine_m5.py`, out of the study-suite plan's scope; worth picking up in a future pass.
+25. **The M5 RRS sensitivity sweep (08 §3.3) found a real, actionable miscalibration candidate**:
+    `rrs_m5_window=18` produced 10 real trades (vs. the spec-default `window=12`'s 3, and
+    `window=6`'s 0) against the same 130-symbol universe. Not acted on in this milestone (same
+    disclosed-but-deprioritized treatment as the D1 window finding, item #6 above), but a strong,
+    numbers-backed candidate for a future recalibration pass -- see the M7 study-suite section
+    below for the full sweep table.
+26. **The bias-engine confusion matrix (08 §3.4, a genuinely new study, first run this milestone)
+    found the bucketed bias call shows approximately zero directional skill above base rate** at a
+    12-bar (~1 hour) forward horizon: `BULL`'s 33.9% hit rate for a subsequent UP move is
+    statistically indistinguishable from the unconditional 34.9% UP base rate across all 97,231
+    classified M5 bars; `BEAR`'s 35.1% is barely above the 30.3% DOWN base rate. One design point
+    (horizon/threshold), not an exhaustive sweep, and the bias engine's role is gating direction
+    rather than forecasting SPY in isolation -- but a real, honest finding worth further
+    investigation (e.g. a horizon sweep) before relying on the bias engine's bucket as a
+    standalone directional signal.
 
 ## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
@@ -1159,52 +1185,115 @@ Running `scripts/audit_gate_pass_rates.py` across all 128 symbols (`reports/gate
   market-wide trigger mechanism, not a symbol's own dip-arming -- a materially different, more
   specific finding than "confluence is rare" alone.
 
-## Decision needed before building the 08 §3 study suite
+## Decision on the 3-trade sample: proceed now (resolved)
 
-With only 3 trades, none of the validation studies below can produce anything beyond "not enough
-samples" -- the same wall M3.5 would have hit at 8 D1 trades had it not expanded the universe
-28 -> 130 first. But the joint-pass-rate gap here (~0.01-0.02%) is roughly 40-80x tighter than
-D1's ~0.83% that a ~4.6x universe expansion fixed, so the same lever alone is unlikely to be
-enough this time (already flagged as a risk in the prior version of this section, now confirmed
-with real numbers). Three real options going forward, each a genuine judgment call rather than a
-mechanical next step -- worth a decision before more building happens:
+Three options were on the table before building the 08 §3 study suite: loosen specific gate
+thresholds, expand the universe further, or proceed on the honest 3-trade sample now (matching
+M3.5's own precedent of running its D1 studies on a small 8-trade sample and reporting results as
+directional, not statistical proof). **The user chose to proceed now.** The full suite below was
+built and run against the real 3-trade sample; loosening gates or expanding the universe remain
+open options for a future pass, informed by this run's real findings (particularly the RRS window
+sensitivity result below, which is now a concrete, numbers-backed candidate for a future
+recalibration pass rather than a hypothesis).
 
-1. **Loosen specific gate thresholds** -- the audit points at `rrs_m5` (6.3%), `rrs_d1` (18.4%),
-   and `ha_cont_d1` (20.3%) as the tightest hard gates; touching these is a real calibration
-   decision (how far, and whether that still honors algo-spec 04/05/06's intent), not a bug fix.
-2. **Expand the universe further** -- toward the spec's originally-envisioned 800-1,500-symbol
-   scan (`01`), following M3.5's precedent, understanding from the numbers above that this alone
-   may not close the gap.
-3. **Proceed to build the 08 §3 study suite now**, on the honest, disclosed 3-trade sample --
-   matching M3.5's own precedent of running studies on a small D1 sample (8 trades) and reporting
-   results as directional, not statistical proof, until a larger sample exists.
+## M7: full validation study suite (08 §3), M5 cadence -- built and run
 
-Once a real, non-trivial M6 trade log exists (whichever lever produces it), M7's remaining job is
-algo-spec 08 §3's full validation study suite, run at true M5 cadence (the D1-cadence versions of
-these same studies were already built and run during M3.5 -- see `backtest/studies/` and the
-"M3.5 status"/"Universe expansion" sections above for that precedent and its real findings):
+Built via the same subagent-driven-development workflow as every prior milestone: 6 tasks (1
+config-knob prerequisite + 5 study modules/CLI), each with a fresh implementer and independent
+task reviewer, one fix-and-re-review round out of 6. Plan:
+`docs/superpowers/plans/2026-07-03-m7-validation-study-suite.md`. Test suite: 190 (M7 pre-work
+checkpoint) -> 202.
 
-- **Rule-count ablation (08 §3.1)** -- extend `backtest/studies/ablation.py` to disable each M5
-  hard gate/rule individually (not just the D1 set of {bias, rrs, ha, sma}) and check whether
-  trade frequency responds; M3.5's D1 version found this uninformative (no single ablated rule
-  unlocked a new trade) -- worth checking whether the fuller M5 gate set behaves differently.
-- **Walk-away analysis (08 §3.2)** -- extend `backtest/studies/walk_away.py` to M5 cadence:
-  MFE/MAE per `IDLE -> QUALIFIED` entry signal vs. realized trade R, the same comparison that
-  found a real MFE/realized-R gap at D1 cadence (mean MFE ~1.9R vs. realized ~-0.11R).
-- **RRS parameter sensitivity (08 §3.3)** -- extend `backtest/studies/rrs_sensitivity.py` to sweep
-  `RRS_M5_WINDOW` (currently 12, per spec value L=12) the same way M3.5 swept `RRS_D1_WINDOW` and
-  found a real, consistent `window=3` improvement over the D1 default of 5 (known limitation #6
-  above) -- worth knowing whether the M5 window has a similar miscalibration.
-- **Bias-engine confusion matrix (08 §3.4)** -- not yet built at any cadence; a new
-  `backtest/studies/` module comparing `bias/engine.py`'s bucketed bias calls against realized
-  forward price direction.
-- **Time-of-day / regime slicing (08 §3.5)** -- not yet built at any cadence; a new
-  `backtest/studies/` module slicing trade outcomes by time-of-day (open/mid-day/close) and by
-  `regime_d1`/`regime_d1_m5` (TREND_UP/CHOP/TREND_DOWN), extending the same pattern
-  `ablation.py`/`walk_away.py`/`rrs_sensitivity.py` established at M3.5.
-- A `scripts/run_validation_studies.py` (the full 08 suite, M5 cadence) to replace/supersede
-  `scripts/run_validation_studies_m35.py`, the same relationship `run_backtest_intraday.py` has to
-  `run_backtest_d1.py`.
-- Once M7's studies are running on real M6 trades, revisit known limitations #18 (ATR-only stops),
-  #19 (dip/bounce-quality proxy), and #21 (untested slots_free mirror scenario) with real evidence
-  instead of a priori judgment calls.
+**What was built:**
+- `BacktestConfigM5.rrs_m5_threshold_long/short` + `rrs_d1_threshold_long/short` (commits
+  `491bdc0`/`f14afd6`) -- new config knobs threaded through `_prepare_m5`'s gate calls, needed by
+  the RRS sensitivity sweep below. The first-pass tests were found vacuous by the reviewer (passed
+  even with the threading fully reverted, due to a fixture quirk) and replaced with
+  `mock.patch(wraps=...)` tests spying on the real kwargs passed to the gate functions --
+  independently re-verified via bug-injection by the re-reviewer.
+- `backtest/studies/ablation_m5.py` (commit `87e1be5`) -- 08 §3.1's rule-count ablation, extended
+  to M5's fuller 6-hard-rule set (bias, rrs, ha, sma, rrs_m5, vwap vs. D1's 4), reported separately
+  for LONG and SHORT.
+- `backtest/studies/walk_away_m5.py` (commit `e876802`) -- 08 §3.2's walk-away analysis (MFE/MAE
+  of "IDLE -> QUALIFIED" signals vs. realized trade R), M5 cadence, both directions. Designed to
+  take an already-computed `PreparedM5` + trades DataFrame as input (not raw universe dicts +
+  its own backtest run), specifically to let the CLI share one baseline run across studies rather
+  than repeating the ~15-20 minute precompute redundantly.
+- `backtest/studies/rrs_sensitivity_m5.py` (commit `ea2c5ac`) -- 08 §3.3's RRS window x threshold
+  sweep, M5 cadence: `rrs_m5_window` in {6, 12, 18} (algo-spec 02/04's own L sweep) x threshold in
+  {0.75, 1.0, 1.5}, 9 combinations, overall + per-direction metrics.
+- `backtest/studies/bias_confusion_m5.py` + `backtest/studies/time_of_day_m5.py` (commit
+  `4b27f9e`) -- two genuinely new studies (08 §3.4/§3.5, never built at any cadence before now):
+  bias-bucket-vs-forward-price-direction confusion matrix, and time-of-day/regime trade slicing.
+- `scripts/run_validation_studies.py` (commit `8cb9ea2`) -- the CLI wiring all 5 studies together,
+  computing one shared baseline `_prepare_m5`/`run_m5_backtest` run and threading it into
+  ablation/walk-away/time-of-day (only RRS sensitivity's 9 combinations and ablation's 6
+  gate-disabled variants need genuinely fresh runs). The final whole-branch review found this
+  "shared baseline" doesn't fully eliminate the redundant precompute: `run_m5_backtest` has no
+  parameter to accept a pre-built `PreparedM5`, so it silently recomputes one internally right
+  after the script's own explicit call -- a real, non-blocking inefficiency (one extra ~15-20
+  minute run out of ~17 total), inherited from `engine_m5.py`'s existing public API and out of
+  this plan's scope to fix. Worth a small `run_m5_backtest(..., prepared=None)` optional-parameter
+  addition in a future pass.
+
+**Real bugs found and fixed:** none beyond the M7 pre-work's ADV-gate fix (documented above) --
+this plan's 6 build tasks needed only 1 fix-and-re-review round, and that fix was to a vacuous
+test, not production code (the production code in that task was approved first pass).
+
+**Real run**, `python scripts/run_validation_studies.py`, full 130-symbol/5-year warehouse
+(`shorts_enabled=True` throughout, so both books actually traded), user-run directly (not
+backgrounded by the agent) for full visibility, ~3 hours wall clock:
+
+- **3.1 Gate ablation**: baseline 3 trades; disabling `rrs`, `ha`, or `sma` individually each
+  unlocked exactly 1 additional distinct trade (a different symbol each time -- `ORCL`
+  2023-06-14 via `rrs`, `KLAC` 2026-06-10 via `ha`, `AMGN` 2025-02-03 via `sma`); disabling `bias`,
+  `rrs_m5`, or `vwap` unlocked nothing. 6 total distinct trades scored across all 7 runs, split 3
+  at rule_count=5 (missing exactly one of the 6 rules) and 3 at rule_count=6 (all rules
+  satisfied) -- too small a sample for win-rate/expectancy-by-rule-count to be meaningful (M3.5's
+  own D1 version found zero rules ever unlocked a trade; the fuller M5 rule set is at least
+  slightly more informative than that, but still far short of a real signal). No SHORT trades
+  occurred in any ablation run.
+- **3.2 Walk-away analysis**: 747 real entry signals (`IDLE -> QUALIFIED`, both directions) --
+  vastly more than the 6 that ever became a scored trade above, confirming the qualification step
+  itself is not the bottleneck; the bottleneck is what happens after qualification (dip-arming /
+  the trigger-bypass path, matching the M7 pre-work's finding that the "own dip" path essentially
+  never fires). MFE/MAE both directions show large, roughly symmetric two-sided distributions
+  (LONG: mean MFE 4.61R / mean MAE -5.48R; SHORT: mean MFE 5.85R / mean MAE -6.33R) -- these
+  RS/RW-qualified names move a lot in both directions with no active management, confirming (as
+  M3.5 found at D1, mean MFE ~1.9R vs. realized ~-0.11R) that active risk management materially
+  changes the outcome: the 3 realized baseline trades' R (mean -0.28, median -0.86) are far more
+  contained than the walk-away distribution's tails in either direction, at the cost of also
+  capping the occasional large favorable excursion.
+- **3.3 RRS sensitivity sweep -- the single most actionable finding of this run.** `window=6`
+  produces 0 trades at every threshold; `window=12` (the spec's own L default, same as the
+  baseline run) produces 3; `window=18` produces **10 trades at threshold 0.75/1.0** (9 LONG, 1
+  SHORT) and 5 at threshold 1.5 -- more than 3x the baseline trade count from widening the RRS_M5
+  rolling window alone. This is the opposite direction of M3.5's D1 finding (`window=3`, narrower
+  than the D1 default of 5, outperformed) -- at M5 cadence a WIDER window appears to help, not a
+  narrower one. Not acted on in this milestone (matching the disclosed-but-deprioritized treatment
+  of the D1 finding, known limitation #6) but now a concrete, numbers-backed candidate for a
+  future recalibration pass, more actionable than the D1 finding ever was given the trade-count
+  multiplier involved.
+- **3.4 Bias-engine confusion matrix -- a real, slightly concerning null result.** Hit rates:
+  `STRONG_BULL` 34.9% predicting UP, `BULL` 33.9%, `BEAR` 35.1% predicting DOWN, `STRONG_BEAR`
+  24.5% (n=49, noise), `NEUTRAL` 32.9% predicting FLAT. The overall marginal base rates across all
+  97,231 classified bars are UP 34.9% / FLAT 34.8% / DOWN 30.3% -- meaning **`BULL`'s hit rate is
+  statistically indistinguishable from just always guessing UP with no bias engine at all**, and
+  `BEAR`'s hit rate is barely above the DOWN base rate. This is one design point (12-bar / ~1-hour
+  forward horizon, 0.1% flat threshold) not an exhaustive sweep, and doesn't by itself invalidate
+  the bias engine (which exists to gate trade direction, not to forecast SPY in isolation), but is
+  a real, honest finding worth flagging: at this horizon, the bucketed bias call shows
+  approximately zero directional skill above base rate.
+- **3.5 Time-of-day / regime slicing**: only 3 trades total (the baseline run's), all LONG, all in
+  the MIDDAY/TREND_UP bucket -- correctly, honestly thin given the sample size; not informative on
+  its own, included for completeness and ready to become useful once a larger trade count exists
+  (e.g. via the RRS window=18 finding above).
+
+**Interpretation.** M7's necessary-first-step (get M6 to produce a real trade log) succeeded: 0 ->
+3 trades from the ADV-gate fix, and this run's RRS window=18 sweep result shows the ceiling is
+much higher (10 trades) without touching any hard gate threshold at all -- confluence rarity is
+real but not as immovable as the 0-trade result first suggested. The bias-engine confusion-matrix
+null result and the ablation's still-small sample both argue for a follow-up pass (either the RRS
+window recalibration or a universe expansion, or both) before treating any of these directional
+findings as validated. None of this milestone's numbers should be read as "the system works" or
+"the system doesn't work" -- exactly the caveat M3.5 applied to its own 8-trade D1 findings.
