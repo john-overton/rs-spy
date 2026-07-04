@@ -236,7 +236,7 @@ def test_run_m5_backtest_produces_a_trade_log_and_equity_curve(universe):
     trades_df = result.trades_df()
     if not trades_df.empty:
         assert set(trades_df["exit_reason"].unique()) <= {
-            "hard_stop", "market_flip", "rs_failure", "vwap_loss",
+            "hard_stop", "trail_stop", "market_flip", "rs_failure", "vwap_loss",
             "profit_take", "time_flat", "squeeze_guard",
         }
         assert (trades_df["shares"] > 0).all()
@@ -1027,6 +1027,62 @@ def test_funnel_counts_a_trigger_coincidence_killed_by_the_bias_two_bar_hold(mon
     assert result.trades_df().empty
 
 
+def test_funnel_counts_a_trigger_coincidence_killed_by_a_failing_full_gate(monkeypatch):
+    """Important finding: in dip_hold_mode='d1_session', a symbol can be
+    QUALIFIED (held via the relaxed hold gate) while its full gate is False.
+    On a trigger bar with bias held, apply_trigger_bypass is then a no-op
+    (gate_pass=False) and the coincidence must be attributed to
+    trigger_killed_by_gate, not silently dropped -- the funnel partition
+    trigger_coincidences == killed_by_bias_hold + killed_by_gate + bypass
+    must hold in every mode."""
+    from rs_spy.bias.buckets import LONG_TRIGGER
+
+    sym = "TGATE"
+    n = 10
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    trigger_by_bar = [NO_TRIGGER] * n
+    trigger_by_bar[3] = LONG_TRIGGER
+    # full gate True on bars 0-1 (so IDLE -> QUALIFIED can happen), False from
+    # bar 2 onward (including the trigger bar); hold gate always True so the
+    # symbol stays QUALIFIED through the full-gate failure instead of
+    # demoting to IDLE.
+    full_gate = [True, True] + [False] * (n - 2)
+    hold_gate = [True] * n
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        trigger_by_bar=trigger_by_bar,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},  # flat: never dips, so only the bypass path is exercised
+        gate_long_by_symbol={sym: pd.Series(full_gate, index=calendar)},
+        gate_long_hold_by_symbol={sym: pd.Series(hold_gate, index=calendar)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(dip_hold_mode="d1_session"),
+    )
+    f = result.funnel
+    assert f["long_trigger_bars"] == 1
+    assert f["long_trigger_coincidences"] == 1
+    assert f["long_trigger_killed_by_bias_hold"] == 0
+    assert f["long_trigger_killed_by_gate"] == 1
+    assert f["long_trigger_bypass"] == 0
+    assert (
+        f["long_trigger_coincidences"]
+        == f["long_trigger_killed_by_bias_hold"] + f["long_trigger_killed_by_gate"] + f["long_trigger_bypass"]
+    )
+    assert result.trades_df().empty
+
+
 def test_funnel_is_present_and_all_zero_when_nothing_ever_qualifies(monkeypatch):
     sym = "DEAD"
     n = 6
@@ -1053,7 +1109,8 @@ def test_funnel_is_present_and_all_zero_when_nothing_ever_qualifies(monkeypatch)
         for side in ("long", "short")
         for key in (
             "qualified_signals", "dip_armed", "entry_eval_via_dip",
-            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold", "trigger_bypass",
+            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold",
+            "trigger_killed_by_gate", "trigger_bypass",
             "eval_blocked_no_entry_window", "eval_blocked_risk_halt", "eval_blocked_bias",
             "eval_killed_by_lockout_or_cap", "eval_killed_by_quality", "eval_killed_by_ranking",
             "eval_killed_by_slots", "eval_killed_by_sizing",
@@ -1123,9 +1180,10 @@ def test_run_m5_backtest_with_prepared_reproduces_the_from_scratch_result(univer
 
 def test_trailing_stop_exit_is_labeled_trail_stop_and_does_not_lock_out(monkeypatch):
     """A stop exit AFTER the 1.5xATR trail trigger armed must be labeled
-    trail_stop (not hard_stop), must not add the symbol to the same-day
-    lockout set, and must reset (not increment) the consecutive-stop-out
-    counter. Reuses the trail-test price path: trend up hard, then crash."""
+    trail_stop (not hard_stop); the lockout/stop-out-counter exemption follows
+    from RiskManager/lockout keying on the 'hard_stop' string (see engine exit
+    processing), not asserted here. Reuses the trail-test price path: trend up
+    hard, then crash."""
     sym = "TRND"
     n = 20
     calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")

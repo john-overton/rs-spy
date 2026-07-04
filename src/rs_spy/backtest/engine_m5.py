@@ -420,13 +420,18 @@ def run_m5_backtest(
     # BEFORE the bias 2-bar-hold check; eval_blocked_* = ENTRY_EVAL symbol-bars
     # turned away by that bar-level condition (re-arming counts again -- the
     # funnel measures opportunities, not unique symbols). Short-side trigger/
-    # eval counters only accumulate when shorts_enabled=True.
+    # eval counters only accumulate when shorts_enabled=True. In every mode,
+    # trigger_coincidences == trigger_killed_by_bias_hold + trigger_killed_by_gate
+    # + trigger_bypass: a coincidence either fails the bias hold, fails the full
+    # gate (only reachable in the d1_session/grace dip-hold modes, where a
+    # symbol can be QUALIFIED while its full gate is False), or bypasses.
     funnel = {
         f"{side}_{key}": 0
         for side in ("long", "short")
         for key in (
             "qualified_signals", "dip_armed", "entry_eval_via_dip",
-            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold", "trigger_bypass",
+            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold",
+            "trigger_killed_by_gate", "trigger_bypass",
             "eval_blocked_no_entry_window", "eval_blocked_risk_halt", "eval_blocked_bias",
             "eval_killed_by_lockout_or_cap", "eval_killed_by_quality", "eval_killed_by_ranking",
             "eval_killed_by_slots", "eval_killed_by_sizing",
@@ -660,7 +665,9 @@ def run_m5_backtest(
                     continue
                 gl = bool(prepared.gate_long[sym].iat[i])
                 new_state = watchlist.apply_trigger_bypass(state_long[sym], gl, True)
-                if new_state != state_long[sym]:
+                if new_state == state_long[sym]:
+                    funnel["long_trigger_killed_by_gate"] += 1
+                else:
                     state_long[sym] = new_state
                     entry_path_long[sym] = "A"
                     funnel["long_trigger_bypass"] += 1
@@ -676,7 +683,9 @@ def run_m5_backtest(
                     continue
                 gs = bool(prepared.gate_short[sym].iat[i])
                 new_state = watchlist.apply_trigger_bypass(state_short[sym], gs, True)
-                if new_state != state_short[sym]:
+                if new_state == state_short[sym]:
+                    funnel["short_trigger_killed_by_gate"] += 1
+                else:
                     state_short[sym] = new_state
                     entry_path_short[sym] = "A"
                     funnel["short_trigger_bypass"] += 1

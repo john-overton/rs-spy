@@ -15,6 +15,12 @@ e.g. r23-w18-t05-s15 or r1a-w18-t10-s10.
 Overrides via --config-json are applied to base_config BEFORE _prepare_m5, so
 prepare-baked overrides (e.g. dip_hold_mode) are honored. Note: stop_atr_mult in
 the JSON would be overwritten by the --stop-mults loop, so it should be left out.
+Same caution applies to rrs_m5_window and rrs_m5_threshold_long/short: a
+--config-json override wins over the --window/--thresholds loop values (it's
+applied last, via replace(base_config, **overrides)), but the run_id and the
+CSV's window/rrs_m5_threshold columns still record the loop values, not the
+override -- pass rrs_m5_window/rrs_m5_threshold via --window/--thresholds
+instead of --config-json so the recorded run_id and CSV columns stay accurate.
 
 Usage: python scripts/run_tuning_sweep.py --window 18
        python scripts/run_tuning_sweep.py --window 18 --run-tag r1a --config-json '{"dip_hold_mode": "d1_session"}'
@@ -43,7 +49,7 @@ RESULT_COLUMNS = [
     "max_drawdown_pct", "total_pnl", "same_bar_stop_rate",
     "hard_stops", "trail_stops", "profit_takes", "other_exits",
     "qualified_long", "dip_armed_long", "trigger_coincidences_long",
-    "killed_by_bias_hold_long", "trigger_bypass_long", "killed_by_quality_long",
+    "killed_by_bias_hold_long", "killed_by_gate_long", "trigger_bypass_long", "killed_by_quality_long",
     "orders_filled_long", "orders_filled_short", "prepare_seconds",
 ]
 
@@ -166,6 +172,7 @@ def main(
                 "dip_armed_long": fn["long_dip_armed"],
                 "trigger_coincidences_long": fn["long_trigger_coincidences"],
                 "killed_by_bias_hold_long": fn["long_trigger_killed_by_bias_hold"],
+                "killed_by_gate_long": fn["long_trigger_killed_by_gate"],
                 "trigger_bypass_long": fn["long_trigger_bypass"],
                 "killed_by_quality_long": fn["long_eval_killed_by_quality"],
                 "orders_filled_long": fn["long_orders_filled"],
@@ -177,6 +184,7 @@ def main(
                 f"pnl={metrics.get('total_pnl')} same_bar={same_bar} "
                 f"stops={hard_stops} trails={trail_stops} takes={profit_takes} "
                 f"funnel: coinc={fn['long_trigger_coincidences']} biaskill={fn['long_trigger_killed_by_bias_hold']} "
+                f"gatekill={fn['long_trigger_killed_by_gate']} "
                 f"qualkill={fn['long_eval_killed_by_quality']} armed={fn['long_dip_armed']}"
             )
 
