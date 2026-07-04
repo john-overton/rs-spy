@@ -1188,3 +1188,48 @@ def test_stop_exit_without_trail_arming_stays_hard_stop(monkeypatch):
     trades_df = result.trades_df()
     assert not trades_df.empty
     assert trades_df.iloc[0]["exit_reason"] == "hard_stop"
+
+
+def test_bias_hold_bars_one_admits_a_first_bull_bar_trigger(monkeypatch):
+    """Round 4 lever A3: with bias_hold_bars=1, a trigger firing on the FIRST
+    bullish bar (which the default 2-bar hold kills -- see
+    test_funnel_counts_a_trigger_coincidence_killed_by_the_bias_two_bar_hold)
+    must convert to a trade."""
+    from rs_spy.bias.buckets import LONG_TRIGGER
+
+    sym = "TRIG"
+    n = 10
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    bias_by_bar = [BEAR, BEAR, BEAR] + [BULL] * (n - 3)
+    trigger_by_bar = [NO_TRIGGER] * n
+    trigger_by_bar[3] = LONG_TRIGGER
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=bias_by_bar,
+        regime_by_bar=[CHOP] * n,
+        trigger_by_bar=trigger_by_bar,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        confirm_trigger_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(bias_hold_bars=1),
+    )
+    f = result.funnel
+    assert f["long_trigger_killed_by_bias_hold"] == 0
+    assert f["long_trigger_bypass"] == 1
+    assert not result.trades_df().empty
+
+
+def test_default_rrs_m5_window_is_18():
+    """Promoted from the spec default 12 per the Rounds 2-3 sweep
+    (docs/tuning/ledger.csv r23-w18-* rows: 10 trades / PF 2.06 vs 3 / 4.63)."""
+    assert BacktestConfigM5().rrs_m5_window == 18

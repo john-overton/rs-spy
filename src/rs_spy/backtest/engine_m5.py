@@ -35,7 +35,7 @@ from rs_spy.bias.regime import CHOP, TREND_UP
 from rs_spy.data.resample import align_daily_to_intraday
 from rs_spy.indicators.atr import atr as atr_fn
 from rs_spy.selection import gates, scoring, watchlist
-from rs_spy.selection.features_m5 import RRS_M5_WINDOW, compute_symbol_features_m5
+from rs_spy.selection.features_m5 import compute_symbol_features_m5
 
 ATR_PERIOD_M5 = 14
 EMA8_SPAN = 8
@@ -57,7 +57,10 @@ class BacktestConfigM5:
     starting_equity: float = 100_000.0
     min_adv_shares: float = 50_000.0
     disabled_gates: frozenset = field(default_factory=frozenset)
-    rrs_m5_window: int = RRS_M5_WINDOW
+    # Promoted from the spec default (features_m5.RRS_M5_WINDOW = 12) per the
+    # Rounds 2-3 sweep: window=18 is a clean local peak (10 trades / PF 2.06
+    # vs 3 / 4.63 at 12; 16 / 0.97 at 24). See docs/tuning/ledger.csv.
+    rrs_m5_window: int = 18
     use_qqq_crosscheck: bool = False
     rrs_m5_threshold_long: float = 1.0
     rrs_m5_threshold_short: float = -1.0
@@ -68,6 +71,7 @@ class BacktestConfigM5:
     expected_hold_minutes: float = 120.0
     unfilled_cancel_bars: int = 2
     stop_atr_mult: float = 1.0
+    bias_hold_bars: int = 2  # consecutive family bars required before entries; 1 = current bar only
 
 
 @dataclass
@@ -303,7 +307,7 @@ def run_m5_backtest(
     risk_per_trade_pct, max_concurrent_*, short_size_multiplier,
     min_list_score, min_hold_score, top_n_*, max_per_sector, shorts_enabled,
     starting_equity, stop_atr_mult, max_entries_per_symbol_*,
-    expected_hold_minutes, unfilled_cancel_bars, and disabled_gates only for
+    expected_hold_minutes, unfilled_cancel_bars, bias_hold_bars, and disabled_gates only for
     "bias". Baked into `prepared` (need a fresh _prepare_m5 to vary):
     min_adv_shares, non-bias disabled_gates entries, rrs_m5_window,
     use_qqq_crosscheck, and the four rrs_*_threshold_* fields."""
@@ -323,13 +327,14 @@ def run_m5_backtest(
         bias_ok_short = pd.Series(True, index=calendar)
     else:
         bias_ok_long_family = prepared.bias_df["bias"].isin([BULL, STRONG_BULL])
-        bias_ok_long = bias_ok_long_family & bias_ok_long_family.shift(1, fill_value=False)
+        bias_ok_long = bias_ok_long_family.copy()
+        for k in range(1, config.bias_hold_bars):
+            bias_ok_long &= bias_ok_long_family.shift(k, fill_value=False)
         bias_ok_short_family = prepared.bias_df["bias"].isin([BEAR, STRONG_BEAR])
-        bias_ok_short = (
-            bias_ok_short_family
-            & bias_ok_short_family.shift(1, fill_value=False)
-            & (prepared.regime_d1_m5 != TREND_UP)
-        )
+        bias_ok_short = bias_ok_short_family.copy()
+        for k in range(1, config.bias_hold_bars):
+            bias_ok_short &= bias_ok_short_family.shift(k, fill_value=False)
+        bias_ok_short &= prepared.regime_d1_m5 != TREND_UP
     in_entry_window = (~prepared.bias_df["warmup"]) & (et_tod <= NEW_ENTRY_CUTOFF)
 
     # Cross-detection "previous" values (dip-arm RRS/LRSI crossings) must be
