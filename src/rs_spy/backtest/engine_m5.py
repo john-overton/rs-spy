@@ -302,14 +302,18 @@ def run_m5_backtest(
     sessions = calendar.normalize()
     weeks = calendar.isocalendar().week.to_numpy()
 
-    bias_ok_long_family = prepared.bias_df["bias"].isin([BULL, STRONG_BULL])
-    bias_ok_long = bias_ok_long_family & bias_ok_long_family.shift(1, fill_value=False)
-    bias_ok_short_family = prepared.bias_df["bias"].isin([BEAR, STRONG_BEAR])
-    bias_ok_short = (
-        bias_ok_short_family
-        & bias_ok_short_family.shift(1, fill_value=False)
-        & (prepared.regime_d1_m5 != TREND_UP)
-    )
+    if "bias" in config.disabled_gates:
+        bias_ok_long = pd.Series(True, index=calendar)
+        bias_ok_short = pd.Series(True, index=calendar)
+    else:
+        bias_ok_long_family = prepared.bias_df["bias"].isin([BULL, STRONG_BULL])
+        bias_ok_long = bias_ok_long_family & bias_ok_long_family.shift(1, fill_value=False)
+        bias_ok_short_family = prepared.bias_df["bias"].isin([BEAR, STRONG_BEAR])
+        bias_ok_short = (
+            bias_ok_short_family
+            & bias_ok_short_family.shift(1, fill_value=False)
+            & (prepared.regime_d1_m5 != TREND_UP)
+        )
     in_entry_window = (~prepared.bias_df["warmup"]) & (et_tod <= NEW_ENTRY_CUTOFF)
 
     state_long = dict.fromkeys(universe_m5, watchlist.IDLE)

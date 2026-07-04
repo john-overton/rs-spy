@@ -7,7 +7,7 @@ import pytest
 from rs_spy.backtest import engine_m5
 from rs_spy.backtest.engine_m5 import BacktestConfigM5, PreparedM5, _prepare_m5, run_m5_backtest
 from rs_spy.bias.buckets import BEAR, BULL, NO_TRIGGER
-from rs_spy.bias.regime import CHOP
+from rs_spy.bias.regime import CHOP, TREND_UP
 from rs_spy.selection import gates as gates_module
 
 
@@ -604,6 +604,162 @@ def test_slots_free_short_book_not_starved_by_open_long_positions(monkeypatch):
         "never have counted against -- slots_free_s must count only SHORT positions/pending orders"
     )
     assert (short_trades["symbol"] == "SHT").all()
+
+
+def test_run_m5_backtest_disabled_bias_bypasses_the_long_market_bias_filter(monkeypatch):
+    """Regression test for the M7 ablation-study bug: `disabled_gates={"bias"}`
+    is currently a no-op in `run_m5_backtest` -- `bias_ok_long`/`bias_ok_short`
+    are computed unconditionally from `prepared.bias_df`, never consulting
+    `config.disabled_gates` (unlike `gates.gates_pass_long_m5`/
+    `gates_pass_short_m5`, which DO receive `disabled=config.disabled_gates`
+    for the rrs/ha/sma/vwap rules -- see lines 148/157). This builds a symbol
+    whose watchlist state legitimately reaches ENTRY_EVAL, with every OTHER
+    gate wide open, under a bias series that is BEAR on every single bar --
+    so `bias_ok_long` is False throughout unless the "bias" ablation genuinely
+    bypasses it (LONG's own market-flip exit is `flip_now`-gated, not a bare
+    bias check, so a BEAR bias alone can't otherwise interfere with this
+    scenario -- see the flip_flatten comment on the mirrored SHORT-side test
+    below). With `disabled_gates=frozenset()`, no entry can ever be
+    submitted, so trades must be empty. With `disabled_gates={"bias"}`, the
+    same setup must submit + fill the entry and later hard-stop out --
+    proving the ablation flag actually reached `bias_ok_long`, not just that
+    trade counts happened to differ by chance.
+    """
+    sym = "LNG"
+    n = 8
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+
+    opens = [100.0] * n
+    highs = [100.5] * n
+    lows = [99.5] * n
+    lows[4] = 98.0  # breach the 1xATR hard stop (entry 100.0 - 1.0*atr = 99.0) once open
+    closes = [100.0] * n
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    rrs_vals = [-1.0, 1.0] + [1.0] * (n - 2)  # crosses up at bar1 -> QUALIFIED->DIP_ARMED->ENTRY_EVAL at bar2
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BEAR] * n,  # never bullish -> bias_ok_long is False throughout unless disabled
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    baseline = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    assert baseline.trades_df().empty, (
+        "baseline (bias enabled) should never enter -- bias is BEAR on every bar, so "
+        "bias_ok_long must be False throughout and no long entry can be submitted"
+    )
+
+    disabled_bias = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(disabled_gates=frozenset({"bias"})),
+    )
+    trades_df = disabled_bias.trades_df()
+    assert not trades_df.empty, (
+        "disabled_gates={'bias'} must bypass the market-bias filter and let the "
+        "otherwise-qualified LONG entry through -- an empty result here means "
+        "disabled_gates never reached bias_ok_long (the bug this test guards against)"
+    )
+    trade = trades_df.iloc[0]
+    assert trade["direction"] == "LONG"
+    assert trade["exit_reason"] == "hard_stop"
+
+
+def test_run_m5_backtest_disabled_bias_bypasses_the_short_market_bias_filter(monkeypatch):
+    """Mirrors the LONG-side test above for the SHORT side of the same bug --
+    the M7 ablation study is genuinely bidirectional (unlike D1's, which is
+    LONG-only), so the fix must cover both `bias_ok_long` AND `bias_ok_short`.
+
+    This exercises the SHORT-side gate's extra `regime_d1_m5 != TREND_UP`
+    clause specifically: bias is BEAR on every bar (so the plain bias check
+    would normally pass) but regime is pinned to TREND_UP throughout, which
+    the pre-fix code always applies unconditionally -- forcing
+    `bias_ok_short` False the whole run regardless of the genuinely-bearish
+    bias. `disabled_gates={"bias"}` must bypass BOTH clauses at once (the
+    fixed branch replaces the whole expression with an unconditional
+    `pd.Series(True, ...)`).
+
+    Bias is held at BEAR (not BULL) so the open SHORT position itself isn't
+    killed by the unconditional `bias_now in (BULL, STRONG_BULL)` market-flip
+    check that SHORT positions carry (see
+    `test_slots_free_short_book_not_starved_by_open_long_positions`'s
+    docstring for that asymmetry) -- that check is orthogonal to this bug and
+    would otherwise confound the result.
+    """
+    sym = "SHT"
+    n = 8
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+
+    opens = [100.0] * n
+    highs = [100.5] * n
+    lows = [99.5] * n
+    highs[4] = 102.0  # breach the 1xATR hard stop (entry 100.0 + 1.0*atr = 101.0) once open
+    closes = [100.0] * n
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    rrs_vals = [1.0, -1.0] + [-1.0] * (n - 2)  # crosses down at bar1 -> QUALIFIED->DIP_ARMED->ENTRY_EVAL at bar2
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BEAR] * n,
+        regime_by_bar=[TREND_UP] * n,  # pins the SHORT-only regime exclusion on, every bar
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_short_by_symbol={sym: _flat_series(calendar, True)},
+        score_short_by_symbol={sym: _flat_series(calendar, 100.0)},
+        bounce_quality_short_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    shared_kwargs = dict(shorts_enabled=True, max_concurrent_short=1)
+    baseline = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Energy"},
+        config=BacktestConfigM5(**shared_kwargs),
+    )
+    assert baseline.trades_df().empty, (
+        "baseline (bias enabled) should never enter SHORT -- regime is pinned to "
+        "TREND_UP on every bar, so bias_ok_short must be False throughout and no "
+        "short entry can be submitted, even though the raw bias is genuinely BEAR"
+    )
+
+    disabled_bias = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Energy"},
+        config=BacktestConfigM5(disabled_gates=frozenset({"bias"}), **shared_kwargs),
+    )
+    trades_df = disabled_bias.trades_df()
+    assert not trades_df.empty, (
+        "disabled_gates={'bias'} must bypass the market-bias filter (including the "
+        "TREND_UP exclusion) and let the otherwise-qualified SHORT entry through -- "
+        "an empty result here means disabled_gates never reached bias_ok_short"
+    )
+    trade = trades_df.iloc[0]
+    assert trade["direction"] == "SHORT"
+    assert trade["exit_reason"] == "hard_stop"
 
 
 def test_prepare_m5_threads_rrs_thresholds_into_long_gate_call(universe):
