@@ -1073,7 +1073,7 @@ rather than repeated here.
     inline instead, so a typo introduced directly in the script file would not be caught by the
     test suite. Minor, pre-existing in the Task 7 brief, not an implementer fault; not blocking,
     but worth tightening before relying on this test as a safety net for script-level changes.
-23. **Found during the final whole-branch review, minor, does not affect the 0-trade result:**
+23. ~~**Found during the final whole-branch review, minor, does not affect the 0-trade result:**
     `run_m5_backtest`'s dip-arm cross detection (`rrs_prev`/`lrsi_prev` via `.iat[i-1]` on the
     *reindexed* `features` frame, `engine_m5.py` ~L466-469) is the one exit/entry-signal series in
     the event loop computed on reindexed data rather than following this milestone's own
@@ -1088,7 +1088,13 @@ rather than repeated here.
     large-cap/liquid names have effectively continuous M5 coverage), but worth fixing -- or at
     least being aware of -- before M7 expands the universe to thinner names specifically hoping a
     larger sample surfaces trades: this bug would silently work against exactly that goal for the
-    newly-added thin symbols.
+    newly-added thin symbols.~~
+
+    **RESOLVED (M7.5 Phase 0).** `run_m5_backtest` now precomputes per-symbol
+    `ffill().shift(1)` "previous" series for the dip-arm RRS/LRSI crossings, so the
+    comparison uses the symbol's own last real native reading across master-calendar
+    gap rows. Regression test:
+    `test_dip_arm_cross_uses_symbols_last_native_reading_across_a_gap_bar`.
 24. **`scripts/run_validation_studies.py`'s "shared baseline" doesn't fully eliminate the
     redundant precompute** (found during the M7 study-suite's Task 6 review) -- the script calls
     `_prepare_m5` explicitly to get `baseline_prepared`, then calls `run_m5_backtest` with the same

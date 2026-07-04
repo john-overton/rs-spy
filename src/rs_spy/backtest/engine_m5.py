@@ -317,6 +317,19 @@ def run_m5_backtest(
         )
     in_entry_window = (~prepared.bias_df["warmup"]) & (et_tod <= NEW_ENTRY_CUTOFF)
 
+    # Cross-detection "previous" values (dip-arm RRS/LRSI crossings) must be
+    # each symbol's own last REAL reading, not whatever sat on the immediately
+    # preceding master-calendar row -- which is NaN for thin/gappy symbols and
+    # silently suppressed the crossing (IMPLEMENTATION.md known-limitation #23,
+    # fixed here). ffill().shift(1) on the reindexed frame reproduces the
+    # native shift(1) at every bar the symbol actually trades: the forward-fill
+    # carries the last real reading across gap rows, and the shift moves it
+    # strictly before the current bar. Bars the symbol has no native data for
+    # still can't arm (rrs_now itself is NaN there, and NaN comparisons are
+    # False), matching the strict-reindex "no signal" convention.
+    rrs_prev_by_sym = {sym: prepared.features[sym]["rolling_rrs_m5"].ffill().shift(1) for sym in universe_m5}
+    lrsi_prev_by_sym = {sym: prepared.features[sym]["lrsi_m5"].ffill().shift(1) for sym in universe_m5}
+
     state_long = dict.fromkeys(universe_m5, watchlist.IDLE)
     state_short = dict.fromkeys(universe_m5, watchlist.IDLE)
     entry_path_long: dict = {}
@@ -479,9 +492,9 @@ def run_m5_backtest(
             gl = bool(prepared.gate_long[sym].iat[i])
             score = prepared.score_long[sym].iat[i]
             rrs_now = prepared.features[sym]["rolling_rrs_m5"].iat[i]
-            rrs_prev = prepared.features[sym]["rolling_rrs_m5"].iat[i - 1] if i > 0 else None
+            rrs_prev = rrs_prev_by_sym[sym].iat[i]
             lrsi_now = prepared.features[sym]["lrsi_m5"].iat[i]
-            lrsi_prev = prepared.features[sym]["lrsi_m5"].iat[i - 1] if i > 0 else None
+            lrsi_prev = lrsi_prev_by_sym[sym].iat[i]
             prev_state = state_long[sym]
             state_long[sym] = watchlist.next_state_long(
                 prev_state, gl, score, rrs_prev, rrs_now,

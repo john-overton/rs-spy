@@ -854,3 +854,64 @@ def test_run_m5_backtest_threads_stop_atr_mult_into_stop_price_calls(monkeypatch
         )
     assert spy.called, "expected at least one long stop-price computation"
     assert all(call.kwargs.get("stop_atr_mult") == 2.0 for call in spy.call_args_list)
+
+
+def test_dip_arm_cross_uses_symbols_last_native_reading_across_a_gap_bar(monkeypatch):
+    """Regression test for IMPLEMENTATION.md known-limitation #23: the dip-arm
+    RRS/LRSI cross detection read its "previous" value from the immediately
+    preceding MASTER-calendar row of the reindexed features frame. For a
+    thin/gappy symbol (a real, anticipated case on the IEX-only feed) that row
+    is NaN whenever the symbol had no native bar there, so a genuine
+    dip-and-recover (RRS -1.0 -> [gap] -> +1.0) never armed: NaN < 0 is False.
+
+    The gate series here is hand-held True through the gap bar (production
+    gates read False on gap bars, which ALSO demotes the symbol -- that is the
+    matrix's Round-1 alert-model redesign scope, deliberately not this fix).
+    This test pins cross-detection in isolation via the hand-built seam: with
+    the fix, prev at the post-gap bar is the symbol's last REAL reading (-1.0),
+    the cross fires, and a trade results; without it, the symbol sits QUALIFIED
+    forever and the trade log is empty."""
+    sym = "THIN"
+    n = 10
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+
+    closes = [100.0] * 6 + [90.0] * (n - 6)  # crash at bar 6 forces a clean hard-stop exit
+    opens = [c - 0.02 for c in closes]
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.2 for c in closes]
+    lows[6] = 89.0  # intrabar drop through the stop
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+
+    # bar 0: -1.0 (real reading); bar 1: NaN (the symbol has no native bar --
+    # a master-calendar gap row); bar 2: +1.0 (real reading again).
+    rrs_vals = [-1.0, np.nan, 1.0] + [1.0] * (n - 3)
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    assert not trades_df.empty, (
+        "RRS crossed up over a gap bar (-1.0 -> NaN gap -> +1.0) but no trade resulted -- "
+        "the dip-arm 'previous' value must be the symbol's last real native reading, not the NaN gap row"
+    )
+    assert trades_df.iloc[0]["direction"] == "LONG"
+    assert trades_df.iloc[0]["exit_reason"] == "hard_stop"
