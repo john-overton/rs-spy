@@ -15,6 +15,7 @@ e.g. r23-w18-t05-s15.
 Usage: python scripts/run_tuning_sweep.py --window 18
 """
 import csv
+import gc
 import json
 import time
 from dataclasses import asdict, replace
@@ -89,7 +90,13 @@ def main(
     out_root.mkdir(parents=True, exist_ok=True)
     results_csv = out_root / "sweep_results.csv"
 
+    prepared = None
     for thr in thr_list:
+        # Release the previous threshold's PreparedM5 BEFORE building the next
+        # one -- holding both across the _prepare_m5 call doubles peak memory
+        # and has OOM-killed multi-threshold sweep runs on this machine.
+        del prepared
+        gc.collect()
         base_config = BacktestConfigM5(
             shorts_enabled=shorts,
             rrs_m5_window=window,
