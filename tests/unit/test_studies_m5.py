@@ -4,6 +4,7 @@ import pytest
 
 from rs_spy.backtest.engine_m5 import BacktestConfigM5, _prepare_m5, run_m5_backtest
 from rs_spy.backtest.studies.ablation_m5 import HARD_RULES_M5, _score_trades, run_gate_ablation_m5
+from rs_spy.backtest.studies.rrs_sensitivity_m5 import THRESHOLDS, WINDOWS, run_rrs_sensitivity_m5
 from rs_spy.backtest.studies.walk_away_m5 import _walk_away_rows, run_walk_away_m5
 from rs_spy.bias.buckets import BULL
 
@@ -221,3 +222,19 @@ def test_walk_away_rows_mfe_mae_sign_and_magnitude_both_directions():
     assert short_row["mae_r"] == pytest.approx((entry_price - window_high_max) / r_basis)
     assert short_row["mfe_r"] == pytest.approx(2.0)
     assert short_row["mae_r"] == pytest.approx(-2.5)
+
+
+def test_run_rrs_sensitivity_m5_sweeps_every_combination(small_universe):
+    u = small_universe
+    universe_m1, universe_m5, universe_d1 = {"AAPL": u["aapl_m1"]}, {"AAPL": u["aapl_m5"]}, {"AAPL": u["aapl_d1"]}
+    sectors = {"AAPL": "Technology"}
+
+    sweep = run_rrs_sensitivity_m5(
+        universe_m1, universe_m5, universe_d1, u["spy_m1"], u["spy_m5"], u["spy_d1"],
+        u["qqq_m1"], u["qqq_m5"], sectors,
+    )
+    assert len(sweep) == len(WINDOWS) * len(THRESHOLDS)
+    assert set(sweep["window"]) == set(WINDOWS)
+    assert set(sweep["threshold"]) == set(THRESHOLDS)
+    for col in ("overall_n_trades", "long_n_trades", "short_n_trades"):
+        assert col in sweep.columns
