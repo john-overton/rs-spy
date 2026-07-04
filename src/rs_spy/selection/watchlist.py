@@ -39,8 +39,12 @@ def next_state_long(
     lrsi_now: float | None = None,
     min_list_score: float = 50.0,
     min_hold_score: float = 40.0,
+    hold_gate_pass: bool | None = None,
 ) -> str:
-    holds = gate_pass and _score_ok(score, min_hold_score)
+    """hold_gate_pass: when given, QUALIFIED/DIP_ARMED persistence checks this
+    relaxed gate instead of gate_pass (the alert-model dip-hold -- admission
+    still requires the full gate_pass)."""
+    holds = (gate_pass if hold_gate_pass is None else hold_gate_pass) and _score_ok(score, min_hold_score)
     if state == IDLE:
         return QUALIFIED if gate_pass and _score_ok(score, min_list_score) else IDLE
     if not holds:
@@ -67,8 +71,12 @@ def next_state_short(
     lrsi_now: float | None = None,
     min_list_score: float = 50.0,
     min_hold_score: float = 40.0,
+    hold_gate_pass: bool | None = None,
 ) -> str:
-    holds = gate_pass and _score_ok(score, min_hold_score)
+    """hold_gate_pass: when given, QUALIFIED/DIP_ARMED persistence checks this
+    relaxed gate instead of gate_pass (the alert-model dip-hold -- admission
+    still requires the full gate_pass)."""
+    holds = (gate_pass if hold_gate_pass is None else hold_gate_pass) and _score_ok(score, min_hold_score)
     if state == IDLE:
         return QUALIFIED if gate_pass and _score_ok(score, min_list_score) else IDLE
     if not holds:

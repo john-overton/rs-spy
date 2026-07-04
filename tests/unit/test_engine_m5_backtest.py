@@ -337,6 +337,7 @@ def _build_prepared_for_run_loop(
     bounce_quality_short_by_symbol=None,
     rs_failure_short_by_symbol=None,
     confirm_trigger_long_by_symbol=None,
+    gate_long_hold_by_symbol=None,
 ) -> PreparedM5:
     """Hand-builds a `PreparedM5` for driving `run_m5_backtest`'s event loop
     directly, bypassing `_prepare_m5`'s (separately tested) derivation from
@@ -404,6 +405,13 @@ def _build_prepared_for_run_loop(
         bounce_quality_short[sym] = bounce_quality_short_by_symbol.get(sym, _flat_series(calendar, False))
         squeeze_guard_short[sym] = _flat_series(calendar, False)
 
+    hold_kwargs = {}
+    if gate_long_hold_by_symbol is not None:
+        hold_kwargs["gate_long_hold"] = {
+            sym: gate_long_hold_by_symbol.get(sym, _flat_series(calendar, False)) for sym in symbols
+        }
+        hold_kwargs["gate_short_hold"] = {sym: _flat_series(calendar, False) for sym in symbols}
+
     return PreparedM5(
         calendar=calendar,
         bias_df=bias_df,
@@ -428,6 +436,7 @@ def _build_prepared_for_run_loop(
         dip_quality_long=dip_quality_long,
         bounce_quality_short=bounce_quality_short,
         squeeze_guard_short=squeeze_guard_short,
+        **hold_kwargs,
     )
 
 
@@ -1254,3 +1263,95 @@ def test_prepare_m5_threads_confirm_knobs_into_confirm_trigger_calls(universe):
     for call in spy.call_args_list:
         assert call.kwargs.get("rrs_m5_threshold") == 0.25
         assert call.kwargs.get("not_extended_atr_mult") == 1.75
+
+
+def test_d1_session_dip_hold_mode_arms_and_trades_through_an_rrs_dip(monkeypatch):
+    """Round 1 lever A1: with dip_hold_mode='d1_session', a QUALIFIED symbol
+    whose rrs_m5 gate fails during the dip (full gate False, hold gate True)
+    survives, arms on the RRS zero-cross, and converts to a Path B trade.
+    Under the default strict mode this exact scenario produces zero trades
+    (the dip bar demotes the symbol to IDLE)."""
+    sym = "DIPR"
+    n = 12
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    closes = [100.0] * 8 + [90.0] * (n - 8)
+    opens = [c - 0.02 for c in closes]
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.2 for c in closes]
+    lows[8] = 89.0
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    # bar 0-1: strong (gates pass); bars 2-3: the dip -- rrs goes negative, FULL
+    # gate fails; bar 4: rrs crosses back up through zero (arm) while the full
+    # gate is still recovering
+    rrs_vals = [1.5, 1.2, -0.8, -0.4, 0.6] + [1.0] * (n - 5)
+    full_gate = [True, True, False, False, False, True] + [True] * (n - 6)
+    hold_gate = [True] * n
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: pd.Series(full_gate, index=calendar)},
+        gate_long_hold_by_symbol={sym: pd.Series(hold_gate, index=calendar)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    kwargs = dict(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+    )
+    strict = run_m5_backtest(**kwargs, config=BacktestConfigM5())
+    assert strict.trades_df().empty, "strict mode should demote at the dip and never trade"
+
+    alert = run_m5_backtest(**kwargs, config=BacktestConfigM5(dip_hold_mode="d1_session"))
+    assert not alert.trades_df().empty, "d1_session mode should survive the dip, arm on the cross, and trade"
+    assert alert.funnel["long_dip_armed"] == 1
+
+
+def test_grace_dip_hold_mode_tolerates_bounded_gate_failure(monkeypatch):
+    """Round 1 lever A1 variant b: grace mode keeps QUALIFIED through a gate-fail
+    streak shorter than dip_hold_grace_bars and demotes past it."""
+    sym = "GRCE"
+    n = 12
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    closes = [100.0] * 8 + [90.0] * (n - 8)
+    opens = [c - 0.02 for c in closes]
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.2 for c in closes]
+    lows[8] = 89.0
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    rrs_vals = [1.5, 1.2, -0.8, -0.4, 0.6] + [1.0] * (n - 5)
+    full_gate = [True, True, False, False, False, True] + [True] * (n - 6)
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: pd.Series(full_gate, index=calendar)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+    kwargs = dict(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+    )
+    wide = run_m5_backtest(**kwargs, config=BacktestConfigM5(dip_hold_mode="grace", dip_hold_grace_bars=6))
+    assert not wide.trades_df().empty, "3-bar gate-fail streak within a 6-bar grace should survive and trade"
+
+    tight = run_m5_backtest(**kwargs, config=BacktestConfigM5(dip_hold_mode="grace", dip_hold_grace_bars=2))
+    assert tight.trades_df().empty, "3-bar streak past a 2-bar grace should demote before the cross"

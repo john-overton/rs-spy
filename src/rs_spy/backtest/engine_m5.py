@@ -73,6 +73,13 @@ class BacktestConfigM5:
     stop_atr_mult: float = 1.0
     bias_hold_bars: int = 2  # consecutive family bars required before entries; 1 = current bar only
     confirm_not_extended_atr_mult: float = 1.0
+    # Dip-hold (Round 1 alert model): "strict" = current behavior (full gates
+    # re-checked every bar); "d1_session" = QUALIFIED persists on D1 gates +
+    # hold-score only (intraday gates may fail during the dip; states reset at
+    # session open); "grace" = full gates, but tolerate up to
+    # dip_hold_grace_bars consecutive failing bars before demotion.
+    dip_hold_mode: str = "strict"
+    dip_hold_grace_bars: int = 24
 
 
 @dataclass
@@ -100,6 +107,8 @@ class PreparedM5:
     dip_quality_long: dict
     bounce_quality_short: dict
     squeeze_guard_short: dict
+    gate_long_hold: dict | None = None
+    gate_short_hold: dict | None = None
 
 
 def _prepare_m5(
@@ -125,6 +134,7 @@ def _prepare_m5(
 
     bars, features, ema8, atr_m5, adv20_m5 = {}, {}, {}, {}, {}
     gate_long, gate_short, score_long, score_short = {}, {}, {}, {}
+    gate_long_hold, gate_short_hold = {}, {}
     rs_failure_long, rs_failure_short = {}, {}
     vwap_loss_long, vwap_loss_short = {}, {}
     momentum_stall_long, momentum_stall_short = {}, {}
@@ -163,6 +173,25 @@ def _prepare_m5(
             disabled=config.disabled_gates,
             adv20=adv20_native,
         ).fillna(False)
+        hold_disabled = frozenset(config.disabled_gates) | {"rrs_m5", "vwap", "one_candle_wonder"}
+        gl_hold_native = gates.gates_pass_long_m5(
+            df_m5_native, feat_native, earnings_blackout.get(sym),
+            min_adv_shares=config.min_adv_shares,
+            rrs_m5_threshold=config.rrs_m5_threshold_long,
+            rrs_d1_threshold=config.rrs_d1_threshold_long,
+            use_qqq_crosscheck=config.use_qqq_crosscheck,
+            disabled=hold_disabled,
+            adv20=adv20_native,
+        ).fillna(False)
+        gs_hold_native = gates.gates_pass_short_m5(
+            df_m5_native, feat_native, earnings_blackout.get(sym),
+            min_adv_shares=config.min_adv_shares,
+            rrs_m5_threshold=config.rrs_m5_threshold_short,
+            rrs_d1_threshold=config.rrs_d1_threshold_short,
+            use_qqq_crosscheck=config.use_qqq_crosscheck,
+            disabled=hold_disabled,
+            adv20=adv20_native,
+        ).fillna(False)
         sl_native = scoring.score_long_m5(feat_native)
         ss_native = scoring.score_short_m5(feat_native)
 
@@ -195,6 +224,8 @@ def _prepare_m5(
         adv20_m5[sym] = adv20_native.reindex(calendar)
         gate_long[sym] = gl_native.reindex(calendar, fill_value=False)
         gate_short[sym] = gs_native.reindex(calendar, fill_value=False)
+        gate_long_hold[sym] = gl_hold_native.reindex(calendar, fill_value=False)
+        gate_short_hold[sym] = gs_hold_native.reindex(calendar, fill_value=False)
         score_long[sym] = sl_native.reindex(calendar)
         score_short[sym] = ss_native.reindex(calendar)
         rs_failure_long[sym] = rs_fail_l_native.reindex(calendar, fill_value=False)
@@ -233,6 +264,8 @@ def _prepare_m5(
         dip_quality_long=dip_quality_long,
         bounce_quality_short=bounce_quality_short,
         squeeze_guard_short=squeeze_guard_short,
+        gate_long_hold=gate_long_hold,
+        gate_short_hold=gate_short_hold,
     )
 
 
@@ -316,11 +349,14 @@ def run_m5_backtest(
     risk_per_trade_pct, max_concurrent_*, short_size_multiplier,
     min_list_score, min_hold_score, top_n_*, max_per_sector, shorts_enabled,
     starting_equity, stop_atr_mult, max_entries_per_symbol_*,
-    expected_hold_minutes, unfilled_cancel_bars, bias_hold_bars, and disabled_gates only for
-    "bias". Baked into `prepared` (need a fresh _prepare_m5 to vary):
-    min_adv_shares, non-bias disabled_gates entries, rrs_m5_window,
-    use_qqq_crosscheck, confirm_not_extended_atr_mult, and the four rrs_*_threshold_* fields
-    (the latter also feed the trigger-bar reconfirmation checks, not just the initial gates)."""
+    expected_hold_minutes, unfilled_cancel_bars, bias_hold_bars, disabled_gates only for
+    "bias", and dip_hold_mode/dip_hold_grace_bars (the hold-gate series are always
+    computed in _prepare_m5 regardless of mode, so any freshly-built PreparedM5
+    supports switching dip_hold_mode without a rebuild). Baked into `prepared`
+    (need a fresh _prepare_m5 to vary): min_adv_shares, non-bias disabled_gates
+    entries, rrs_m5_window, use_qqq_crosscheck, confirm_not_extended_atr_mult,
+    and the four rrs_*_threshold_* fields (the latter also feed the trigger-bar
+    reconfirmation checks, not just the initial gates)."""
     config = config or BacktestConfigM5()
     if prepared is None:
         prepared = _prepare_m5(
@@ -359,6 +395,13 @@ def run_m5_backtest(
     # False), matching the strict-reindex "no signal" convention.
     rrs_prev_by_sym = {sym: prepared.features[sym]["rolling_rrs_m5"].ffill().shift(1) for sym in universe_m5}
     lrsi_prev_by_sym = {sym: prepared.features[sym]["lrsi_m5"].ffill().shift(1) for sym in universe_m5}
+
+    if config.dip_hold_mode not in ("strict", "d1_session", "grace"):
+        raise ValueError(f"unknown dip_hold_mode: {config.dip_hold_mode!r}")
+    if config.dip_hold_mode == "d1_session" and prepared.gate_long_hold is None:
+        raise ValueError("dip_hold_mode='d1_session' needs a PreparedM5 with gate_long_hold/gate_short_hold")
+    gate_fail_streak_long = dict.fromkeys(universe_m5, 0)
+    gate_fail_streak_short = dict.fromkeys(universe_m5, 0)
 
     state_long = dict.fromkeys(universe_m5, watchlist.IDLE)
     state_short = dict.fromkeys(universe_m5, watchlist.IDLE)
@@ -408,6 +451,9 @@ def run_m5_backtest(
             locked_out_long = set()
             locked_out_short = set()
             risk_mgr.new_session(equity)
+            if config.dip_hold_mode == "d1_session":
+                state_long = dict.fromkeys(universe_m5, watchlist.IDLE)
+                state_short = dict.fromkeys(universe_m5, watchlist.IDLE)
             prev_session = session
         if week != prev_week:
             risk_mgr.new_week(equity)
@@ -556,10 +602,18 @@ def run_m5_backtest(
             lrsi_now = prepared.features[sym]["lrsi_m5"].iat[i]
             lrsi_prev = lrsi_prev_by_sym[sym].iat[i]
             prev_state = state_long[sym]
+            if config.dip_hold_mode == "d1_session":
+                hold_l = bool(prepared.gate_long_hold[sym].iat[i])
+            elif config.dip_hold_mode == "grace":
+                gate_fail_streak_long[sym] = 0 if gl else gate_fail_streak_long[sym] + 1
+                hold_l = gl or gate_fail_streak_long[sym] <= config.dip_hold_grace_bars
+            else:
+                hold_l = None
             state_long[sym] = watchlist.next_state_long(
                 prev_state, gl, score, rrs_prev, rrs_now,
                 lrsi_prev=lrsi_prev, lrsi_now=lrsi_now,
                 min_list_score=config.min_list_score, min_hold_score=config.min_hold_score,
+                hold_gate_pass=hold_l,
             )
             if prev_state == watchlist.IDLE and state_long[sym] == watchlist.QUALIFIED:
                 funnel["long_qualified_signals"] += 1
@@ -572,10 +626,18 @@ def run_m5_backtest(
                 gs = bool(prepared.gate_short[sym].iat[i])
                 score_s = prepared.score_short[sym].iat[i]
                 prev_state_s = state_short[sym]
+                if config.dip_hold_mode == "d1_session":
+                    hold_s = bool(prepared.gate_short_hold[sym].iat[i])
+                elif config.dip_hold_mode == "grace":
+                    gate_fail_streak_short[sym] = 0 if gs else gate_fail_streak_short[sym] + 1
+                    hold_s = gs or gate_fail_streak_short[sym] <= config.dip_hold_grace_bars
+                else:
+                    hold_s = None
                 state_short[sym] = watchlist.next_state_short(
                     prev_state_s, gs, score_s, rrs_prev, rrs_now,
                     lrsi_prev=lrsi_prev, lrsi_now=lrsi_now,
                     min_list_score=config.min_list_score, min_hold_score=config.min_hold_score,
+                    hold_gate_pass=hold_s,
                 )
                 if prev_state_s == watchlist.IDLE and state_short[sym] == watchlist.QUALIFIED:
                     funnel["short_qualified_signals"] += 1

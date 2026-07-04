@@ -58,3 +58,28 @@ def test_apply_trigger_bypass_leaves_other_states_alone():
     assert apply_trigger_bypass(DIP_ARMED, gate_pass=True, trigger_matches_direction=True) == DIP_ARMED
     assert apply_trigger_bypass(QUALIFIED, gate_pass=True, trigger_matches_direction=False) == QUALIFIED
     assert apply_trigger_bypass(QUALIFIED, gate_pass=False, trigger_matches_direction=True) == QUALIFIED
+
+
+def test_next_state_long_hold_gate_pass_keeps_qualified_through_intraday_gate_failure():
+    from rs_spy.selection.watchlist import DIP_ARMED, QUALIFIED, next_state_long
+
+    # full gate fails (rrs_m5 dipped) but the hold gate (D1-only) still passes:
+    # symbol must stay QUALIFIED instead of demoting to IDLE...
+    state = next_state_long(QUALIFIED, False, 60.0, 1.0, 1.0, hold_gate_pass=True)
+    assert state == QUALIFIED
+    # ...and the RRS zero-cross must now be able to arm on a later bar
+    state = next_state_long(QUALIFIED, False, 60.0, -0.5, 0.2, hold_gate_pass=True)
+    assert state == DIP_ARMED
+
+
+def test_next_state_long_hold_gate_pass_false_still_demotes():
+    from rs_spy.selection.watchlist import IDLE, QUALIFIED, next_state_long
+
+    assert next_state_long(QUALIFIED, False, 60.0, 1.0, 1.0, hold_gate_pass=False) == IDLE
+
+
+def test_next_state_long_idle_admission_ignores_hold_gate():
+    from rs_spy.selection.watchlist import IDLE, next_state_long
+
+    # hold_gate_pass=True must NOT admit a symbol whose full gates fail
+    assert next_state_long(IDLE, False, 60.0, 1.0, 1.0, hold_gate_pass=True) == IDLE

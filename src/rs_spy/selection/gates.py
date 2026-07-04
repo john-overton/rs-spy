@@ -202,8 +202,8 @@ def gates_pass_long_m5(
     adv20: pd.Series | None = None,
 ) -> pd.Series:
     """Full 9-gate long-side check (G1-G9) at M5 cadence. `disabled` reuses
-    HARD_RULE_NAMES plus "rrs_m5"/"vwap" for the M3.5-style ablation study
-    when it's extended to M5 in M7."""
+    HARD_RULE_NAMES plus "rrs_m5"/"vwap"/"one_candle_wonder" for the
+    M3.5-style ablation study when it's extended to M5 in M7."""
     result = gates_pass_long(
         df, features, earnings_blackout, min_price, min_adv_shares,
         rrs_d1_threshold, "rolling_rrs_d1", min_ha_days, min_headroom_atr, min_rvol, disabled,
@@ -213,7 +213,8 @@ def gates_pass_long_m5(
         result &= gate_rrs_m5_long(features, rrs_m5_threshold)
     if "vwap" not in disabled:
         result &= gate_vwap_long(features)
-    result &= gate_not_one_candle_wonder(features)
+    if "one_candle_wonder" not in disabled:
+        result &= gate_not_one_candle_wonder(features)
     result &= gate_no_gap_exclusion(features, max_gap_pct)
     if use_qqq_crosscheck:
         result &= gate_benchmark_crosscheck_long(features)
@@ -245,7 +246,8 @@ def gates_pass_short_m5(
         result &= gate_rrs_m5_short(features, rrs_m5_threshold)
     if "vwap" not in disabled:
         result &= gate_vwap_short(features)
-    result &= gate_not_one_candle_wonder(features)
+    if "one_candle_wonder" not in disabled:
+        result &= gate_not_one_candle_wonder(features)
     result &= gate_no_gap_exclusion(features, max_gap_pct)
     if use_qqq_crosscheck:
         result &= gate_benchmark_crosscheck_short(features)
