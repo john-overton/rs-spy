@@ -1,6 +1,8 @@
 """M6: run the M5 event-driven backtest over the full cached minute-bar history
 for the curated universe, print 08 §2 metrics, and write the trade log to
 reports/m5_backtest/trades.csv."""
+import json
+
 import typer
 
 from rs_spy.backtest.engine_m5 import BacktestConfigM5, run_m5_backtest
@@ -56,9 +58,20 @@ def main(shorts: bool = False) -> None:
         typer.echo("\nExit reason breakdown:")
         typer.echo(trades["exit_reason"].value_counts().to_string())
 
+    same_bar_stop_rate = (
+        float((trades["entry_time"] == trades["exit_time"]).mean()) if not trades.empty else None
+    )
+    typer.echo("\nEntry funnel:")
+    for k, v in result.funnel.items():
+        if v:
+            typer.echo(f"  {k}: {v}")
+    typer.echo(f"  same_bar_stop_rate: {same_bar_stop_rate}")
+
     out_dir = settings.reports_dir / "m5_backtest"
     out_dir.mkdir(parents=True, exist_ok=True)
     trades.to_csv(out_dir / "trades.csv", index=False)
+    with open(out_dir / "funnel.json", "w") as f:
+        json.dump({**result.funnel, "same_bar_stop_rate": same_bar_stop_rate}, f, indent=2)
     if result.equity_curve is not None:
         result.equity_curve.to_csv(out_dir / "equity_curve.csv")
     typer.echo(f"\nWrote trade log to {out_dir / 'trades.csv'}")

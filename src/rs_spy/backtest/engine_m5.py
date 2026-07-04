@@ -275,6 +275,7 @@ class TradeM5:
 class BacktestResultM5:
     trades: list = field(default_factory=list)
     equity_curve: pd.Series | None = None
+    funnel: dict = field(default_factory=dict)
 
     def trades_df(self) -> pd.DataFrame:
         return pd.DataFrame([vars(t) for t in self.trades])
@@ -341,6 +342,26 @@ def run_m5_backtest(
     locked_out_long: set = set()
     locked_out_short: set = set()
 
+    # Entry-funnel instrumentation (tuning-matrix cell D3): flat event counters
+    # over the whole run. qualified_signals = IDLE->QUALIFIED transitions;
+    # trigger_coincidences = (trigger bar x QUALIFIED symbol) pairs counted
+    # BEFORE the bias 2-bar-hold check; eval_blocked_* = ENTRY_EVAL symbol-bars
+    # turned away by that bar-level condition (re-arming counts again -- the
+    # funnel measures opportunities, not unique symbols). Short-side trigger/
+    # eval counters only accumulate when shorts_enabled=True.
+    funnel = {
+        f"{side}_{key}": 0
+        for side in ("long", "short")
+        for key in (
+            "qualified_signals", "dip_armed", "entry_eval_via_dip",
+            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold", "trigger_bypass",
+            "eval_blocked_no_entry_window", "eval_blocked_risk_halt", "eval_blocked_bias",
+            "eval_killed_by_lockout_or_cap", "eval_killed_by_quality", "eval_killed_by_ranking",
+            "eval_killed_by_slots", "eval_killed_by_sizing",
+            "orders_submitted", "orders_filled", "orders_cancelled_unfilled",
+        )
+    }
+
     risk_mgr = risk.RiskManager(starting_equity=config.starting_equity)
     equity = config.starting_equity
     equity_curve = []
@@ -381,12 +402,14 @@ def run_m5_backtest(
                         symbol=sym, direction=order["direction"], entry_bar=i, entry_time=ts,
                         entry_price=fill, shares=order["shares"], stop=order["stop"], entry_atr=order["atr"],
                     )
+                    funnel[("long_" if order["direction"] == LONG else "short_") + "orders_filled"] += 1
                     book = entries_today_long if order["direction"] == LONG else entries_today_short
                     book[sym] = book.get(sym, 0) + 1
                     del pending[sym]
                     continue
                 order["bars_waited"] += 1
             if order["bars_waited"] >= config.unfilled_cancel_bars:
+                funnel[("long_" if order["direction"] == LONG else "short_") + "orders_cancelled_unfilled"] += 1
                 del pending[sym]
 
         # 2. manage open positions
@@ -501,10 +524,13 @@ def run_m5_backtest(
                 lrsi_prev=lrsi_prev, lrsi_now=lrsi_now,
                 min_list_score=config.min_list_score, min_hold_score=config.min_hold_score,
             )
+            if prev_state == watchlist.IDLE and state_long[sym] == watchlist.QUALIFIED:
+                funnel["long_qualified_signals"] += 1
             if prev_state == watchlist.QUALIFIED and state_long[sym] == watchlist.DIP_ARMED:
                 entry_path_long[sym] = "B"
+                funnel["long_dip_armed"] += 1
             elif prev_state == watchlist.DIP_ARMED and state_long[sym] == watchlist.ENTRY_EVAL:
-                pass  # entry_path_long[sym] already "B" from the prior bar
+                funnel["long_entry_eval_via_dip"] += 1  # entry_path_long[sym] already "B" from the prior bar
             if config.shorts_enabled:
                 gs = bool(prepared.gate_short[sym].iat[i])
                 score_s = prepared.score_short[sym].iat[i]
@@ -514,34 +540,64 @@ def run_m5_backtest(
                     lrsi_prev=lrsi_prev, lrsi_now=lrsi_now,
                     min_list_score=config.min_list_score, min_hold_score=config.min_hold_score,
                 )
+                if prev_state_s == watchlist.IDLE and state_short[sym] == watchlist.QUALIFIED:
+                    funnel["short_qualified_signals"] += 1
                 if prev_state_s == watchlist.QUALIFIED and state_short[sym] == watchlist.DIP_ARMED:
                     entry_path_short[sym] = "B"
+                    funnel["short_dip_armed"] += 1
+                elif prev_state_s == watchlist.DIP_ARMED and state_short[sym] == watchlist.ENTRY_EVAL:
+                    funnel["short_entry_eval_via_dip"] += 1
 
         trigger_now = prepared.bias_df["trigger"].iat[i]
-        if bias_ok_long.iat[i] and trigger_now == LONG_TRIGGER:
+        if trigger_now == LONG_TRIGGER:
+            funnel["long_trigger_bars"] += 1
+            bias_ok_now = bool(bias_ok_long.iat[i])
             for sym in universe_m5:
+                if state_long[sym] != watchlist.QUALIFIED:
+                    continue
+                funnel["long_trigger_coincidences"] += 1
+                if not bias_ok_now:
+                    funnel["long_trigger_killed_by_bias_hold"] += 1
+                    continue
                 gl = bool(prepared.gate_long[sym].iat[i])
-                if state_long[sym] == watchlist.QUALIFIED:
-                    new_state = watchlist.apply_trigger_bypass(state_long[sym], gl, True)
-                    if new_state != state_long[sym]:
-                        state_long[sym] = new_state
-                        entry_path_long[sym] = "A"
-        if config.shorts_enabled and bias_ok_short.iat[i] and trigger_now == SHORT_TRIGGER:
+                new_state = watchlist.apply_trigger_bypass(state_long[sym], gl, True)
+                if new_state != state_long[sym]:
+                    state_long[sym] = new_state
+                    entry_path_long[sym] = "A"
+                    funnel["long_trigger_bypass"] += 1
+        if config.shorts_enabled and trigger_now == SHORT_TRIGGER:
+            funnel["short_trigger_bars"] += 1
+            bias_ok_now_s = bool(bias_ok_short.iat[i])
             for sym in universe_m5:
+                if state_short[sym] != watchlist.QUALIFIED:
+                    continue
+                funnel["short_trigger_coincidences"] += 1
+                if not bias_ok_now_s:
+                    funnel["short_trigger_killed_by_bias_hold"] += 1
+                    continue
                 gs = bool(prepared.gate_short[sym].iat[i])
-                if state_short[sym] == watchlist.QUALIFIED:
-                    new_state = watchlist.apply_trigger_bypass(state_short[sym], gs, True)
-                    if new_state != state_short[sym]:
-                        state_short[sym] = new_state
-                        entry_path_short[sym] = "A"
+                new_state = watchlist.apply_trigger_bypass(state_short[sym], gs, True)
+                if new_state != state_short[sym]:
+                    state_short[sym] = new_state
+                    entry_path_short[sym] = "A"
+                    funnel["short_trigger_bypass"] += 1
 
         # 4. submit entries for symbols now in ENTRY_EVAL
+        evals_long = [
+            sym for sym in universe_m5
+            if state_long[sym] == watchlist.ENTRY_EVAL and sym not in positions and sym not in pending
+        ]
+        if evals_long and not in_entry_window.iat[i]:
+            funnel["long_eval_blocked_no_entry_window"] += len(evals_long)
+        elif evals_long and not risk_mgr.can_enter(i):
+            funnel["long_eval_blocked_risk_halt"] += len(evals_long)
+        elif evals_long and not bias_ok_long.iat[i]:
+            funnel["long_eval_blocked_bias"] += len(evals_long)
         if can_enter_now and bias_ok_long.iat[i]:
             eligible = {}
-            for sym in universe_m5:
-                if state_long[sym] != watchlist.ENTRY_EVAL or sym in positions or sym in pending:
-                    continue
+            for sym in evals_long:
                 if sym in locked_out_long or entries_today_long.get(sym, 0) >= config.max_entries_per_symbol_long:
+                    funnel["long_eval_killed_by_lockout_or_cap"] += 1
                     continue
                 path = entry_path_long.get(sym, "B")
                 qualifies = (
@@ -549,18 +605,23 @@ def run_m5_backtest(
                 )
                 if qualifies:
                     eligible[sym] = prepared.score_long[sym].iat[i]
+                else:
+                    funnel["long_eval_killed_by_quality"] += 1
             tradeable = watchlist.build_tradeable_list(
                 eligible, sectors, config.min_list_score, config.top_n_list, config.top_n_tradeable, config.max_per_sector,
             )
+            funnel["long_eval_killed_by_ranking"] += len(eligible) - len(tradeable)
             slots_free = (
                 config.max_concurrent_long
                 - sum(1 for p in positions.values() if p.direction == LONG)
                 - sum(1 for o in pending.values() if o["direction"] == LONG)
             )
+            funnel["long_eval_killed_by_slots"] += max(0, len(tradeable) - max(0, slots_free))
             for sym in tradeable[:slots_free]:
                 bar = prepared.bars[sym].iloc[i]
                 atr = prepared.atr_m5[sym].iat[i]
                 if pd.isna(bar["close"]) or pd.isna(atr) or atr <= 0:
+                    funnel["long_eval_killed_by_sizing"] += 1
                     continue
                 stop = risk.stop_price_long(bar["close"], atr, stop_atr_mult=config.stop_atr_mult)
                 stop_dist = bar["close"] - stop
@@ -571,16 +632,27 @@ def run_m5_backtest(
                     shares, bar["close"], equity, prepared.adv20_m5[sym].iat[i], config.expected_hold_minutes,
                 )
                 if shares <= 0:
+                    funnel["long_eval_killed_by_sizing"] += 1
                     continue
                 limit = broker_sim.entry_limit_price(bar["close"], atr, LONG)
                 pending[sym] = {"direction": LONG, "limit_price": limit, "stop": stop, "atr": atr, "shares": shares, "bars_waited": 0}
+                funnel["long_orders_submitted"] += 1
 
+        evals_short = [
+            sym for sym in universe_m5
+            if state_short[sym] == watchlist.ENTRY_EVAL and sym not in positions and sym not in pending
+        ] if config.shorts_enabled else []
+        if evals_short and not in_entry_window.iat[i]:
+            funnel["short_eval_blocked_no_entry_window"] += len(evals_short)
+        elif evals_short and not risk_mgr.can_enter(i):
+            funnel["short_eval_blocked_risk_halt"] += len(evals_short)
+        elif evals_short and not bias_ok_short.iat[i]:
+            funnel["short_eval_blocked_bias"] += len(evals_short)
         if config.shorts_enabled and can_enter_now and bias_ok_short.iat[i]:
             eligible_s = {}
-            for sym in universe_m5:
-                if state_short[sym] != watchlist.ENTRY_EVAL or sym in positions or sym in pending:
-                    continue
+            for sym in evals_short:
                 if sym in locked_out_short or entries_today_short.get(sym, 0) >= config.max_entries_per_symbol_short:
+                    funnel["short_eval_killed_by_lockout_or_cap"] += 1
                     continue
                 path = entry_path_short.get(sym, "B")
                 qualifies = (
@@ -588,18 +660,23 @@ def run_m5_backtest(
                 )
                 if qualifies:
                     eligible_s[sym] = prepared.score_short[sym].iat[i]
+                else:
+                    funnel["short_eval_killed_by_quality"] += 1
             tradeable_s = watchlist.build_tradeable_list(
                 eligible_s, sectors, config.min_list_score, config.top_n_list, config.top_n_tradeable, config.max_per_sector,
             )
+            funnel["short_eval_killed_by_ranking"] += len(eligible_s) - len(tradeable_s)
             slots_free_s = (
                 config.max_concurrent_short
                 - sum(1 for p in positions.values() if p.direction == SHORT)
                 - sum(1 for o in pending.values() if o["direction"] == SHORT)
             )
+            funnel["short_eval_killed_by_slots"] += max(0, len(tradeable_s) - max(0, slots_free_s))
             for sym in tradeable_s[:slots_free_s]:
                 bar = prepared.bars[sym].iloc[i]
                 atr = prepared.atr_m5[sym].iat[i]
                 if pd.isna(bar["close"]) or pd.isna(atr) or atr <= 0:
+                    funnel["short_eval_killed_by_sizing"] += 1
                     continue
                 stop = risk.stop_price_short(bar["close"], atr, stop_atr_mult=config.stop_atr_mult)
                 stop_dist = stop - bar["close"]
@@ -611,9 +688,11 @@ def run_m5_backtest(
                     shares, bar["close"], equity, prepared.adv20_m5[sym].iat[i], config.expected_hold_minutes,
                 )
                 if shares <= 0:
+                    funnel["short_eval_killed_by_sizing"] += 1
                     continue
                 limit = broker_sim.entry_limit_price(bar["close"], atr, SHORT)
                 pending[sym] = {"direction": SHORT, "limit_price": limit, "stop": stop, "atr": atr, "shares": shares, "bars_waited": 0}
+                funnel["short_orders_submitted"] += 1
 
     equity_series = pd.Series(equity_curve, index=calendar)
-    return BacktestResultM5(trades=trades, equity_curve=equity_series)
+    return BacktestResultM5(trades=trades, equity_curve=equity_series, funnel=funnel)

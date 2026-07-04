@@ -336,6 +336,7 @@ def _build_prepared_for_run_loop(
     score_short_by_symbol=None,
     bounce_quality_short_by_symbol=None,
     rs_failure_short_by_symbol=None,
+    confirm_trigger_long_by_symbol=None,
 ) -> PreparedM5:
     """Hand-builds a `PreparedM5` for driving `run_m5_backtest`'s event loop
     directly, bypassing `_prepare_m5`'s (separately tested) derivation from
@@ -352,6 +353,7 @@ def _build_prepared_for_run_loop(
     score_short_by_symbol = score_short_by_symbol or {}
     bounce_quality_short_by_symbol = bounce_quality_short_by_symbol or {}
     rs_failure_short_by_symbol = rs_failure_short_by_symbol or {}
+    confirm_trigger_long_by_symbol = confirm_trigger_long_by_symbol or {}
     trigger_by_bar = trigger_by_bar if trigger_by_bar is not None else [NO_TRIGGER] * len(calendar)
 
     bias_df = pd.DataFrame(
@@ -396,7 +398,7 @@ def _build_prepared_for_run_loop(
         vwap_loss_short[sym] = _flat_series(calendar, False)
         momentum_stall_long[sym] = _flat_series(calendar, False)
         momentum_stall_short[sym] = _flat_series(calendar, False)
-        confirm_trigger_long[sym] = _flat_series(calendar, False)
+        confirm_trigger_long[sym] = confirm_trigger_long_by_symbol.get(sym, _flat_series(calendar, False))
         confirm_trigger_short[sym] = _flat_series(calendar, False)
         dip_quality_long[sym] = dip_quality_long_by_symbol.get(sym, _flat_series(calendar, False))
         bounce_quality_short[sym] = bounce_quality_short_by_symbol.get(sym, _flat_series(calendar, False))
@@ -915,3 +917,139 @@ def test_dip_arm_cross_uses_symbols_last_native_reading_across_a_gap_bar(monkeyp
     )
     assert trades_df.iloc[0]["direction"] == "LONG"
     assert trades_df.iloc[0]["exit_reason"] == "hard_stop"
+
+
+def _funnel_scenario_bars(n, calendar):
+    closes = [100.0] * 6 + [90.0] * (n - 6)
+    opens = [c - 0.02 for c in closes]
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.2 for c in closes]
+    if n > 6:
+        lows[6] = 89.0
+    return pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+
+
+def test_funnel_counts_the_trigger_bypass_path_end_to_end(monkeypatch):
+    """A QUALIFIED symbol on a LONG_TRIGGER bar with bias held 2+ bars must
+    show up at every funnel stage: coincidence -> bypass -> submitted -> filled."""
+    from rs_spy.bias.buckets import LONG_TRIGGER
+
+    sym = "TRIG"
+    n = 10
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    trigger_by_bar = [NO_TRIGGER] * n
+    trigger_by_bar[3] = LONG_TRIGGER
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        trigger_by_bar=trigger_by_bar,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},  # never dips -> Path B can never fire; only the bypass can
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        confirm_trigger_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    f = result.funnel
+    assert f["long_qualified_signals"] == 1  # IDLE -> QUALIFIED once, at bar 0
+    assert f["long_dip_armed"] == 0
+    assert f["long_trigger_bars"] == 1
+    assert f["long_trigger_coincidences"] == 1
+    assert f["long_trigger_killed_by_bias_hold"] == 0
+    assert f["long_trigger_bypass"] == 1
+    assert f["long_orders_submitted"] == 1
+    assert f["long_orders_filled"] == 1
+    assert not result.trades_df().empty
+
+
+def test_funnel_counts_a_trigger_coincidence_killed_by_the_bias_two_bar_hold(monkeypatch):
+    """Matrix thesis #3: a fresh trigger firing on the FIRST bullish bar fails
+    bias_ok_long's 2-consecutive-bar hold. The funnel must record the
+    coincidence AND attribute the kill to the bias hold."""
+    from rs_spy.bias.buckets import LONG_TRIGGER
+
+    sym = "TRIG"
+    n = 10
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    bias_by_bar = [BEAR, BEAR, BEAR] + [BULL] * (n - 3)
+    trigger_by_bar = [NO_TRIGGER] * n
+    trigger_by_bar[3] = LONG_TRIGGER  # first BULL bar: family holds only 1 bar -> bias_ok_long is False
+
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=bias_by_bar,
+        regime_by_bar=[CHOP] * n,
+        trigger_by_bar=trigger_by_bar,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        confirm_trigger_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    f = result.funnel
+    assert f["long_trigger_bars"] == 1
+    assert f["long_trigger_coincidences"] == 1
+    assert f["long_trigger_killed_by_bias_hold"] == 1
+    assert f["long_trigger_bypass"] == 0
+    assert f["long_orders_submitted"] == 0
+    assert result.trades_df().empty
+
+
+def test_funnel_is_present_and_all_zero_when_nothing_ever_qualifies(monkeypatch):
+    sym = "DEAD"
+    n = 6
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},
+        gate_long_by_symbol={sym: _flat_series(calendar, False)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    expected_keys = {
+        f"{side}_{key}"
+        for side in ("long", "short")
+        for key in (
+            "qualified_signals", "dip_armed", "entry_eval_via_dip",
+            "trigger_bars", "trigger_coincidences", "trigger_killed_by_bias_hold", "trigger_bypass",
+            "eval_blocked_no_entry_window", "eval_blocked_risk_halt", "eval_blocked_bias",
+            "eval_killed_by_lockout_or_cap", "eval_killed_by_quality", "eval_killed_by_ranking",
+            "eval_killed_by_slots", "eval_killed_by_sizing",
+            "orders_submitted", "orders_filled", "orders_cancelled_unfilled",
+        )
+    }
+    assert set(result.funnel) == expected_keys
+    assert all(v == 0 for v in result.funnel.values())
