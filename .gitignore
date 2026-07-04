@@ -9,6 +9,7 @@ venv/
 htmlcov/
 
 .env
+*.lock
 
 data/*.duckdb
 data/*.duckdb.wal
