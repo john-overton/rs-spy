@@ -255,6 +255,7 @@ class PositionM5:
     stop: float
     entry_atr: float
     peak_favorable: float = 0.0
+    trail_engaged: bool = False
 
 
 @dataclass
@@ -435,7 +436,7 @@ def run_m5_backtest(
 
             if pos.direction == LONG:
                 if bar["low"] <= pos.stop:
-                    to_close.append((sym, min(pos.stop, bar["open"]), "hard_stop"))
+                    to_close.append((sym, min(pos.stop, bar["open"]), "trail_stop" if pos.trail_engaged else "hard_stop"))
                     continue
                 if bool(flip_now) and bias_now in (BEAR, STRONG_BEAR):
                     to_close.append((sym, bar["close"], "market_flip"))
@@ -459,6 +460,10 @@ def run_m5_backtest(
                 if bias_now == NEUTRAL and not pd.isna(atr):
                     pos.stop = risk.neutral_tighten_stop_long(pos.entry_price, atr, pos.stop, bar["close"])
                 if pos.peak_favorable >= long_algo.TRAIL_TRIGGER_ATR_MULT * pos.entry_atr and not pd.isna(atr):
+                    # trail_engaged marks the trigger having ever fired -- a later
+                    # stop exit is a "trail_stop" (managed exit), not a stop-OUT,
+                    # so it must not feed the lockout/consecutive-stop-out logic.
+                    pos.trail_engaged = True
                     e8 = prepared.ema8[sym].iat[i]
                     trail = e8 - long_algo.TRAIL_STOP_ATR_MULT * atr
                     pos.stop = max(pos.stop, max(trail, pos.entry_price))
@@ -467,7 +472,7 @@ def run_m5_backtest(
                     continue
             else:  # SHORT
                 if bar["high"] >= pos.stop:
-                    to_close.append((sym, max(pos.stop, bar["open"]), "hard_stop"))
+                    to_close.append((sym, max(pos.stop, bar["open"]), "trail_stop" if pos.trail_engaged else "hard_stop"))
                     continue
                 if prepared.squeeze_guard_short[sym].iat[i]:
                     to_close.append((sym, bar["close"], "squeeze_guard"))
@@ -494,6 +499,10 @@ def run_m5_backtest(
                 if bias_now == NEUTRAL and not pd.isna(atr):
                     pos.stop = risk.neutral_tighten_stop_short(pos.entry_price, atr, pos.stop, bar["close"])
                 if pos.peak_favorable >= short_algo.TRAIL_TRIGGER_ATR_MULT * pos.entry_atr and not pd.isna(atr):
+                    # trail_engaged marks the trigger having ever fired -- a later
+                    # stop exit is a "trail_stop" (managed exit), not a stop-OUT,
+                    # so it must not feed the lockout/consecutive-stop-out logic.
+                    pos.trail_engaged = True
                     e8 = prepared.ema8[sym].iat[i]
                     trail = e8 + short_algo.TRAIL_STOP_ATR_MULT * atr
                     pos.stop = min(pos.stop, min(trail, pos.entry_price))

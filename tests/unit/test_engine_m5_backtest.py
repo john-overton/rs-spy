@@ -491,7 +491,7 @@ def test_long_trail_stop_locks_in_more_than_breakeven_as_trend_extends(monkeypat
     assert not trades_df.empty, "expected the position to open and eventually hard-stop out"
     trade = trades_df.iloc[0]
     assert trade["direction"] == "LONG"
-    assert trade["exit_reason"] == "hard_stop"
+    assert trade["exit_reason"] == "trail_stop"
     # The crux of the regression: after the trend extends well past the
     # 1.5xATR trigger, the trailed stop must have locked in MEANINGFULLY more
     # than breakeven -- not frozen at (or below) entry, which is exactly what
@@ -1110,3 +1110,81 @@ def test_run_m5_backtest_with_prepared_reproduces_the_from_scratch_result(univer
     pd.testing.assert_series_equal(r_shared.equity_curve, r_scratch.equity_curve)
     pd.testing.assert_frame_equal(r_shared.trades_df(), r_scratch.trades_df())
     assert r_shared.funnel == r_scratch.funnel
+
+
+def test_trailing_stop_exit_is_labeled_trail_stop_and_does_not_lock_out(monkeypatch):
+    """A stop exit AFTER the 1.5xATR trail trigger armed must be labeled
+    trail_stop (not hard_stop), must not add the symbol to the same-day
+    lockout set, and must reset (not increment) the consecutive-stop-out
+    counter. Reuses the trail-test price path: trend up hard, then crash."""
+    sym = "TRND"
+    n = 20
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    closes = [100.0, 100.5, 101.0, 101.2]
+    closes += [101.2 + (k - 3) * 0.5 for k in range(4, 15)]
+    closes += [60.0] * (n - len(closes))
+    opens = [c - 0.05 for c in closes]
+    highs = [c + 0.1 for c in closes]
+    lows = [c - 0.3 for c in closes]
+    opens[15], highs[15], lows[15] = 106.5, 106.6, 55.0
+    bars_df = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar
+    )
+    ema8_vals = [c - 1.0 for c in closes]
+    rrs_vals = [-1.0, 1.0] + [1.0] * (n - 2)
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        ema8_by_symbol={sym: pd.Series(ema8_vals, index=calendar)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    assert not trades_df.empty
+    trade = trades_df.iloc[0]
+    assert trade["exit_reason"] == "trail_stop"
+    assert trade["exit_price"] - trade["entry_price"] > 2.0  # trailed well past breakeven
+
+
+def test_stop_exit_without_trail_arming_stays_hard_stop(monkeypatch):
+    """The same-bar stop-out scenario (never any favorable excursion) must
+    still be labeled hard_stop."""
+    sym = "FLAT"
+    n = 8
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [-1.0, 1.0] + [1.0] * (n - 2)},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+    )
+    trades_df = result.trades_df()
+    assert not trades_df.empty
+    assert trades_df.iloc[0]["exit_reason"] == "hard_stop"

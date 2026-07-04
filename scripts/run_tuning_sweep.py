@@ -36,7 +36,7 @@ RESULT_COLUMNS = [
     "run_id", "window", "rrs_m5_threshold", "stop_atr_mult", "shorts_enabled",
     "n_trades", "n_long", "n_short", "win_rate", "profit_factor", "avg_r",
     "max_drawdown_pct", "total_pnl", "same_bar_stop_rate",
-    "hard_stops", "profit_takes", "other_exits",
+    "hard_stops", "trail_stops", "profit_takes", "other_exits",
     "qualified_long", "dip_armed_long", "trigger_coincidences_long",
     "killed_by_bias_hold_long", "trigger_bypass_long", "killed_by_quality_long",
     "orders_filled_long", "orders_filled_short", "prepare_seconds",
@@ -130,6 +130,7 @@ def main(
             n_short = n - n_long
             exit_counts = trades["exit_reason"].value_counts().to_dict() if n else {}
             hard_stops = int(exit_counts.pop("hard_stop", 0))
+            trail_stops = int(exit_counts.pop("trail_stop", 0))
             profit_takes = int(exit_counts.pop("profit_take", 0))
 
             run_dir = out_root / run_id
@@ -150,7 +151,7 @@ def main(
                 "win_rate": metrics.get("win_rate"), "profit_factor": metrics.get("profit_factor"),
                 "avg_r": avg_r, "max_drawdown_pct": metrics.get("max_drawdown_pct"),
                 "total_pnl": metrics.get("total_pnl"), "same_bar_stop_rate": same_bar,
-                "hard_stops": hard_stops, "profit_takes": profit_takes,
+                "hard_stops": hard_stops, "trail_stops": trail_stops, "profit_takes": profit_takes,
                 "other_exits": int(sum(exit_counts.values())),
                 "qualified_long": fn["long_qualified_signals"],
                 "dip_armed_long": fn["long_dip_armed"],
@@ -165,7 +166,7 @@ def main(
             typer.echo(
                 f"[{run_id}] trades={n} (L{n_long}/S{n_short}) pf={metrics.get('profit_factor')} "
                 f"pnl={metrics.get('total_pnl')} same_bar={same_bar} "
-                f"stops={hard_stops} takes={profit_takes} "
+                f"stops={hard_stops} trails={trail_stops} takes={profit_takes} "
                 f"funnel: coinc={fn['long_trigger_coincidences']} biaskill={fn['long_trigger_killed_by_bias_hold']} "
                 f"qualkill={fn['long_eval_killed_by_quality']} armed={fn['long_dip_armed']}"
             )
