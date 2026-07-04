@@ -29,17 +29,25 @@ SQUEEZE_ATR_MULT = 2.0
 SQUEEZE_RVOL_MULT = 2.0
 
 
-def not_extended_short(close: pd.Series, ema8: pd.Series, atr_m5: pd.Series) -> pd.Series:
-    return (ema8 - close) <= NOT_EXTENDED_ATR_MULT * atr_m5
+def not_extended_short(close: pd.Series, ema8: pd.Series, atr_m5: pd.Series, atr_mult: float = NOT_EXTENDED_ATR_MULT) -> pd.Series:
+    return (ema8 - close) <= atr_mult * atr_m5
 
 
-def confirm_trigger_entry_short(features: pd.DataFrame, ema8: pd.Series, atr_m5: pd.Series) -> pd.Series:
-    """06 §2's trigger-bar reconfirmation: RollingRRS_M5 <= -1.0 still true,
+def confirm_trigger_entry_short(
+    features: pd.DataFrame,
+    ema8: pd.Series,
+    atr_m5: pd.Series,
+    rrs_m5_threshold: float = -1.0,
+    not_extended_atr_mult: float = NOT_EXTENDED_ATR_MULT,
+) -> pd.Series:
+    """06 §2's trigger-bar reconfirmation: RollingRRS_M5 still <= the configured
+    gate threshold (parameterized -- a hardcoded -1.0 here silently re-imposed the
+    spec default and made gate-threshold sweeps inert, see docs/tuning ledger),
     below VWAP, not extended."""
     return (
-        (features["rolling_rrs_m5"] <= -1.0)
+        (features["rolling_rrs_m5"] <= rrs_m5_threshold)
         & (features["close"] < features["vwap_m5"])
-        & not_extended_short(features["close"], ema8, atr_m5)
+        & not_extended_short(features["close"], ema8, atr_m5, atr_mult=not_extended_atr_mult)
     )
 
 

@@ -72,6 +72,7 @@ class BacktestConfigM5:
     unfilled_cancel_bars: int = 2
     stop_atr_mult: float = 1.0
     bias_hold_bars: int = 2  # consecutive family bars required before entries; 1 = current bar only
+    confirm_not_extended_atr_mult: float = 1.0
 
 
 @dataclass
@@ -171,8 +172,16 @@ def _prepare_m5(
         vwap_s_native = short_algo.vwap_loss_short(feat_native["close"], feat_native["vwap_m5"])
         stall_l_native = long_algo.momentum_stall_long(feat_native["lrsi_m5"])
         stall_s_native = short_algo.momentum_stall_short(feat_native["lrsi_m5"])
-        confirm_l_native = long_algo.confirm_trigger_entry_long(feat_native, ema8_native, atr_native)
-        confirm_s_native = short_algo.confirm_trigger_entry_short(feat_native, ema8_native, atr_native)
+        confirm_l_native = long_algo.confirm_trigger_entry_long(
+            feat_native, ema8_native, atr_native,
+            rrs_m5_threshold=config.rrs_m5_threshold_long,
+            not_extended_atr_mult=config.confirm_not_extended_atr_mult,
+        )
+        confirm_s_native = short_algo.confirm_trigger_entry_short(
+            feat_native, ema8_native, atr_native,
+            rrs_m5_threshold=config.rrs_m5_threshold_short,
+            not_extended_atr_mult=config.confirm_not_extended_atr_mult,
+        )
         dip_l_native = long_algo.dip_quality_pass_long(df_m5_native, feat_native, atr_native)
         bounce_s_native = short_algo.bounce_quality_pass_short(df_m5_native, feat_native, atr_native)
         squeeze_s_native = short_algo.squeeze_guard_short(
@@ -310,7 +319,8 @@ def run_m5_backtest(
     expected_hold_minutes, unfilled_cancel_bars, bias_hold_bars, and disabled_gates only for
     "bias". Baked into `prepared` (need a fresh _prepare_m5 to vary):
     min_adv_shares, non-bias disabled_gates entries, rrs_m5_window,
-    use_qqq_crosscheck, and the four rrs_*_threshold_* fields."""
+    use_qqq_crosscheck, confirm_not_extended_atr_mult, and the four rrs_*_threshold_* fields
+    (the latter also feed the trigger-bar reconfirmation checks, not just the initial gates)."""
     config = config or BacktestConfigM5()
     if prepared is None:
         prepared = _prepare_m5(

@@ -39,17 +39,25 @@ TRAIL_TRIGGER_ATR_MULT = 1.5
 TRAIL_STOP_ATR_MULT = 0.25
 
 
-def not_extended_long(close: pd.Series, ema8: pd.Series, atr_m5: pd.Series) -> pd.Series:
-    return (close - ema8) <= NOT_EXTENDED_ATR_MULT * atr_m5
+def not_extended_long(close: pd.Series, ema8: pd.Series, atr_m5: pd.Series, atr_mult: float = NOT_EXTENDED_ATR_MULT) -> pd.Series:
+    return (close - ema8) <= atr_mult * atr_m5
 
 
-def confirm_trigger_entry_long(features: pd.DataFrame, ema8: pd.Series, atr_m5: pd.Series) -> pd.Series:
-    """05 §2's trigger-bar reconfirmation: RollingRRS_M5 >= 1.0 still true,
+def confirm_trigger_entry_long(
+    features: pd.DataFrame,
+    ema8: pd.Series,
+    atr_m5: pd.Series,
+    rrs_m5_threshold: float = 1.0,
+    not_extended_atr_mult: float = NOT_EXTENDED_ATR_MULT,
+) -> pd.Series:
+    """05 §2's trigger-bar reconfirmation: RollingRRS_M5 still >= the configured
+    gate threshold (parameterized -- a hardcoded 1.0 here silently re-imposed the
+    spec default and made gate-threshold sweeps inert, see docs/tuning ledger),
     above VWAP, not extended."""
     return (
-        (features["rolling_rrs_m5"] >= 1.0)
+        (features["rolling_rrs_m5"] >= rrs_m5_threshold)
         & (features["close"] > features["vwap_m5"])
-        & not_extended_long(features["close"], ema8, atr_m5)
+        & not_extended_long(features["close"], ema8, atr_m5, atr_mult=not_extended_atr_mult)
     )
 
 

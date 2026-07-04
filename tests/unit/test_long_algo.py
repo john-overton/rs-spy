@@ -111,3 +111,27 @@ def test_market_flip_exit_long_only_on_down_flip():
     flip_up = pd.Series([False, True], index=idx)
     result_up = market_flip_exit_long(bias_up, flip_up)
     assert list(result_up) == [False, False]
+
+
+def test_confirm_trigger_entry_long_honors_rrs_threshold_param():
+    idx = pd.date_range("2026-03-02 14:30", periods=3, freq="5min", tz="UTC")
+    features = pd.DataFrame(
+        {"rolling_rrs_m5": [0.5, 0.5, 0.5], "close": [101.0] * 3, "vwap_m5": [100.0] * 3}, index=idx
+    )
+    ema8 = pd.Series([100.5] * 3, index=idx)
+    atr = pd.Series([1.0] * 3, index=idx)
+    # default threshold 1.0: RRS 0.5 fails the reconfirmation
+    assert not confirm_trigger_entry_long(features, ema8, atr).any()
+    # threshold 0.5: passes
+    assert confirm_trigger_entry_long(features, ema8, atr, rrs_m5_threshold=0.5).all()
+
+
+def test_confirm_trigger_entry_long_honors_not_extended_mult():
+    idx = pd.date_range("2026-03-02 14:30", periods=3, freq="5min", tz="UTC")
+    features = pd.DataFrame(
+        {"rolling_rrs_m5": [1.5] * 3, "close": [102.5] * 3, "vwap_m5": [100.0] * 3}, index=idx
+    )
+    ema8 = pd.Series([101.0] * 3, index=idx)  # close - ema8 = 1.5 x ATR
+    atr = pd.Series([1.0] * 3, index=idx)
+    assert not confirm_trigger_entry_long(features, ema8, atr).any()  # extended at mult 1.0
+    assert confirm_trigger_entry_long(features, ema8, atr, not_extended_atr_mult=2.0).all()

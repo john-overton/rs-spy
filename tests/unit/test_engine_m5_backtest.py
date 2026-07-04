@@ -1233,3 +1233,24 @@ def test_default_rrs_m5_window_is_18():
     """Promoted from the spec default 12 per the Rounds 2-3 sweep
     (docs/tuning/ledger.csv r23-w18-* rows: 10 trades / PF 2.06 vs 3 / 4.63)."""
     assert BacktestConfigM5().rrs_m5_window == 18
+
+
+def test_prepare_m5_threads_confirm_knobs_into_confirm_trigger_calls(universe):
+    from rs_spy.algo import long as long_algo_module
+
+    config = BacktestConfigM5(rrs_m5_threshold_long=0.25, confirm_not_extended_atr_mult=1.75)
+    with patch.object(engine_m5.long_algo, "confirm_trigger_entry_long",
+                      wraps=long_algo_module.confirm_trigger_entry_long) as spy:
+        _prepare_m5(
+            universe_m1={"AAPL": universe["aapl_m1"]},
+            universe_m5={"AAPL": universe["aapl_m5"]},
+            universe_d1={"AAPL": universe["aapl_d1"]},
+            spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+            qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+            sectors={"AAPL": "Technology"},
+            config=config,
+        )
+    assert spy.called
+    for call in spy.call_args_list:
+        assert call.kwargs.get("rrs_m5_threshold") == 0.25
+        assert call.kwargs.get("not_extended_atr_mult") == 1.75
