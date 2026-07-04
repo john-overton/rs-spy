@@ -808,3 +808,49 @@ def test_prepare_m5_threads_rrs_thresholds_into_short_gate_call(universe):
     _, kwargs = mock_short.call_args
     assert kwargs["rrs_m5_threshold"] == -44.0
     assert kwargs["rrs_d1_threshold"] == -45.0
+
+
+def test_run_m5_backtest_threads_stop_atr_mult_into_stop_price_calls(monkeypatch):
+    """BacktestConfigM5.stop_atr_mult must reach risk.stop_price_long as the
+    stop_atr_mult argument -- a config knob that is accepted but never threaded
+    would silently run every sweep cell at the 1.0 default."""
+    from rs_spy.algo import risk as risk_module
+
+    sym = "KNOB"
+    n = 8
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    closes = [100.0] * n
+    bars_df = pd.DataFrame(
+        {
+            "open": [c - 0.02 for c in closes],
+            "high": [c + 0.3 for c in closes],
+            "low": [c - 0.2 for c in closes],
+            "close": closes,
+            "volume": [1_000.0] * n,
+        },
+        index=calendar,
+    )
+    rrs_vals = [-1.0, 1.0] + [1.0] * (n - 2)  # crosses up at bar 1 -> arms the dip
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: bars_df},
+        rrs_by_symbol={sym: rrs_vals},
+        gate_long_by_symbol={sym: _flat_series(calendar, True)},
+        score_long_by_symbol={sym: _flat_series(calendar, 100.0)},
+        dip_quality_long_by_symbol={sym: _flat_series(calendar, True)},
+        atr_by_symbol={sym: _flat_series(calendar, 1.0)},
+    )
+    monkeypatch.setattr(engine_m5, "_prepare_m5", lambda *a, **k: prepared)
+
+    with patch.object(engine_m5.risk, "stop_price_long", wraps=risk_module.stop_price_long) as spy:
+        run_m5_backtest(
+            universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+            spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+            qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+            sectors={sym: "Technology"},
+            config=BacktestConfigM5(stop_atr_mult=2.0),
+        )
+    assert spy.called, "expected at least one long stop-price computation"
+    assert all(call.kwargs.get("stop_atr_mult") == 2.0 for call in spy.call_args_list)

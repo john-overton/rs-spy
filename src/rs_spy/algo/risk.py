@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from rs_spy.bias.buckets import STRONG_BEAR, STRONG_BULL
 
 STOP_ATR_MULT = 1.0
-STOP_ATR_CAP_MULT = 1.5  # documented no-op under the ATR-only simplification above
+STOP_ATR_CAP_MULT = 1.5  # reserved for the spec's swing-low stop variant (07 §3 cap); not applied to the ATR-only stop -- a swept stop_atr_mult must never be silently clamped
 NEUTRAL_TIGHTEN_ATR_MULT = 0.5
 MAX_NOTIONAL_PCT = 0.20
 MAX_PARTICIPATION_PCT = 0.05
@@ -53,12 +53,12 @@ DAILY_LOSS_LIMIT_PCT = -0.02
 WEEKLY_LOSS_LIMIT_PCT = -0.04
 
 
-def stop_price_long(entry: float, atr_m5: float) -> float:
-    return entry - min(STOP_ATR_MULT, STOP_ATR_CAP_MULT) * atr_m5
+def stop_price_long(entry: float, atr_m5: float, stop_atr_mult: float = STOP_ATR_MULT) -> float:
+    return entry - stop_atr_mult * atr_m5
 
 
-def stop_price_short(entry: float, atr_m5: float) -> float:
-    return entry + min(STOP_ATR_MULT, STOP_ATR_CAP_MULT) * atr_m5
+def stop_price_short(entry: float, atr_m5: float, stop_atr_mult: float = STOP_ATR_MULT) -> float:
+    return entry + stop_atr_mult * atr_m5
 
 
 def neutral_tighten_stop_long(entry: float, atr_m5: float, current_stop: float, current_price: float) -> float:

@@ -67,6 +67,7 @@ class BacktestConfigM5:
     max_entries_per_symbol_short: int = 1
     expected_hold_minutes: float = 120.0
     unfilled_cancel_bars: int = 2
+    stop_atr_mult: float = 1.0
 
 
 @dataclass
@@ -548,7 +549,7 @@ def run_m5_backtest(
                 atr = prepared.atr_m5[sym].iat[i]
                 if pd.isna(bar["close"]) or pd.isna(atr) or atr <= 0:
                     continue
-                stop = risk.stop_price_long(bar["close"], atr)
+                stop = risk.stop_price_long(bar["close"], atr, stop_atr_mult=config.stop_atr_mult)
                 stop_dist = bar["close"] - stop
                 shares = risk.position_size(
                     equity, config.risk_per_trade_pct, stop_dist, bias_now, prepared.score_long[sym].iat[i], LONG,
@@ -587,7 +588,7 @@ def run_m5_backtest(
                 atr = prepared.atr_m5[sym].iat[i]
                 if pd.isna(bar["close"]) or pd.isna(atr) or atr <= 0:
                     continue
-                stop = risk.stop_price_short(bar["close"], atr)
+                stop = risk.stop_price_short(bar["close"], atr, stop_atr_mult=config.stop_atr_mult)
                 stop_dist = stop - bar["close"]
                 shares = risk.position_size(
                     equity, config.risk_per_trade_pct, stop_dist, bias_now, prepared.score_short[sym].iat[i], SHORT,

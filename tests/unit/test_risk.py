@@ -149,3 +149,14 @@ def test_risk_manager_weekly_loss_limit_halts_until_new_week():
     assert not rm.can_enter(bar_index=3)  # weekly halt survives a new session
     rm.new_week(equity=95_900.0)
     assert rm.can_enter(bar_index=4)
+
+
+def test_stop_price_long_and_short_accept_a_stop_atr_mult():
+    # matrix cell C1: the ATR-stop multiplier is a tunable knob, default 1.0
+    assert stop_price_long(entry=100.0, atr_m5=2.0, stop_atr_mult=1.5) == pytest.approx(97.0)
+    assert stop_price_short(entry=100.0, atr_m5=2.0, stop_atr_mult=1.5) == pytest.approx(103.0)
+    # a value above the (swing-low-variant-only) 1.5 cap must NOT be clamped
+    assert stop_price_long(entry=100.0, atr_m5=2.0, stop_atr_mult=2.0) == pytest.approx(96.0)
+    assert stop_price_short(entry=100.0, atr_m5=2.0, stop_atr_mult=2.0) == pytest.approx(104.0)
+    # default is unchanged
+    assert stop_price_long(entry=100.0, atr_m5=2.0) == pytest.approx(98.0)
