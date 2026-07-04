@@ -1352,3 +1352,69 @@ null result and the ablation's still-small sample both argue for a follow-up pas
 window recalibration or a universe expansion, or both) before treating any of these directional
 findings as validated. None of this milestone's numbers should be read as "the system works" or
 "the system doesn't work" -- exactly the caveat M3.5 applied to its own 8-trade D1 findings.
+
+## M7.5 Phase 0: tuning-campaign enablers -- built, reviewed, run (2026-07-04)
+
+The M7 review session produced a tuning campaign plan (`docs/tuning/m7.5-tuning-matrix.md`,
+results ledger `docs/tuning/ledger.csv`) built on three review findings: the dip-arm path is
+structurally unreachable as implemented (the QUALIFIED-hold requires `rrs_m5 >= 1` on the same
+series whose zero-cross is supposed to arm the dip -- a logical contradiction), stops at
+1.0xATR(M5) sit inside single-bar noise (2 of 3 real trades stopped out inside their own entry
+bar, 0.05-0.10% stop distances), and the trigger bypass -- the only working entry path -- is
+throttled by preconditions anti-correlated with fresh triggers. Phase 0 built the five campaign
+enablers (plan: `docs/superpowers/plans/2026-07-04-phase0-tuning-enablers.md`, commits
+`ca88df1..d2e6879`, 5 first-pass task approvals + clean final whole-branch review, test suite
+204 -> 215):
+
+1. **`BacktestConfigM5.stop_atr_mult`** (default 1.0, never silently clamped) threaded into both
+   books' `risk.stop_price_long/short` calls -- Round 3's stop sweep is a config field now.
+2. **Known limitation #23 RESOLVED**: dip-arm RRS/LRSI cross detection now reads each symbol's
+   last real native value via precomputed `ffill().shift(1)` series instead of the reindexed
+   frame's previous master-calendar row (NaN on gap bars, silently suppressing crossings for
+   thin symbols).
+3. **Entry-funnel instrumentation**: 36 flat counters through `run_m5_backtest`'s event loop
+   (qualifications, dip-arms, trigger coincidences and their kill causes, submission-stage kill
+   causes, orders/fills/cancels), returned as `BacktestResultM5.funnel` and written to
+   `reports/m5_backtest/funnel.json` by the CLI with `same_bar_stop_rate`. Verified
+   behavior-preserving (counters only; the final review re-derived control-flow equivalence
+   against the pre-branch code line-by-line).
+4. **Known limitation #24 RESOLVED**: `run_m5_backtest(..., prepared: PreparedM5 | None = None)`
+   skips the ~15-20 min precompute; docstring documents exactly which config fields are
+   event-loop-only (safe to vary against a shared `prepared` -- notably `stop_atr_mult`) vs.
+   prepare-baked. `scripts/run_validation_studies.py`'s baseline now passes its own
+   `baseline_prepared`.
+5. **Trigger forward-return study** (08-style, new): `backtest/studies/trigger_skill_m5.py` +
+   `scripts/run_trigger_skill_study.py` (SPY/QQQ only, ~1 min, no backtest run) -- the analog of
+   the M7 bias-bucket confusion matrix for the *trigger*, the signal that actually gates 100% of
+   real entries. Returns measured from the fire bar's close (signal skill, not achievable PnL).
+
+**Real results from the post-build runs:**
+
+- **Behavior preservation confirmed on real data**: the default-config full-warehouse re-run
+  reproduces M7's exact 3 trades (STZ/ORCL/PNC, PF 4.63, PnL +$116.82).
+- **Trigger skill** (`reports/tuning/trigger_skill.csv`, n=1,591 LONG / 561 SHORT fires over 5
+  years): LONG_TRIGGER's mean forward SPY return is 2-3x the all-bars base rate at 12/24-bar
+  horizons (0.023%/0.040% vs 0.008%/0.017%), hit-rate edge modest (44.4% vs 41.7% UP at 24
+  bars). SHORT_TRIGGER shows no skill -- mean forward return stays *positive* after it fires
+  (consistent with the window's bull drift). Modest, real, honest: the long trigger carries
+  some timing signal; the short trigger does not.
+- **The first measured entry funnel** (long book, default config, 5 years): 346 qualification
+  signals -> 15 trigger-bar x QUALIFIED coincidences -> 5 killed by the bias 2-bar hold -> 10
+  bypasses -> 7 killed by `confirm_trigger_entry_long`'s quality check -> 3 submitted -> 3
+  filled. `dip_armed = 0` (the Path B dead-end is now measured, not inferred). Zero
+  opportunities lost to entry window, risk halts, ranking, slots, sizing, or unfilled orders.
+  New finding: the confirm-trigger quality check is the single biggest post-coincidence
+  throttle (7 of 10) -- bigger than the bias hold -- and wasn't on the original lever list;
+  recorded in the matrix as lever candidate A4.
+
+**Deferred, disclosed** (final review's triage, all counter-semantics refinements to revisit
+once real runs show which counters carry weight): a funnel blind spot (ENTRY_EVAL symbol-bars
+skipped because the symbol is already in positions/pending are counted nowhere),
+`eval_killed_by_ranking` conflates cross-sectional ranking cuts with the `min_list_score`
+floor, the short book's `stop_atr_mult` threading is verified by review but not by a dedicated
+test, `same_bar_stop_rate` counts any same-bar exit (not just hard stops), and the CLI's
+funnel echo hides zero-valued counters (funnel.json has them all).
+
+**Next**: tuning Rounds 1-4 per `docs/tuning/m7.5-tuning-matrix.md` §3 -- Round 1 (dip-arm
+alert-model redesign, the structural unlock) is the first real experiment; every run gets a
+row in `docs/tuning/ledger.csv`.
