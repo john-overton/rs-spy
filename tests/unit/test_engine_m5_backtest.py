@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -6,6 +8,7 @@ from rs_spy.backtest import engine_m5
 from rs_spy.backtest.engine_m5 import BacktestConfigM5, PreparedM5, _prepare_m5, run_m5_backtest
 from rs_spy.bias.buckets import BEAR, BULL, NO_TRIGGER
 from rs_spy.bias.regime import CHOP
+from rs_spy.selection import gates as gates_module
 
 
 def _m1_session(date: str, n_minutes: int, start_price: float, drift: float, seed: int) -> pd.DataFrame:
@@ -603,48 +606,49 @@ def test_slots_free_short_book_not_starved_by_open_long_positions(monkeypatch):
     assert (short_trades["symbol"] == "SHT").all()
 
 
-def test_prepare_m5_honors_rrs_m5_threshold_config(universe):
-    loose = BacktestConfigM5(rrs_m5_threshold_long=-100.0)  # impossible to fail
-    strict = BacktestConfigM5(rrs_m5_threshold_long=100.0)  # impossible to pass
-    prepared_loose = _prepare_m5(
-        universe_m1={"AAPL": universe["aapl_m1"]},
-        universe_m5={"AAPL": universe["aapl_m5"]},
-        universe_d1={"AAPL": universe["aapl_d1"]},
-        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
-        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
-        sectors={"AAPL": "Technology"},
-        config=loose,
+def test_prepare_m5_threads_rrs_thresholds_into_long_gate_call(universe):
+    config = BacktestConfigM5(
+        rrs_m5_threshold_long=42.0, rrs_d1_threshold_long=43.0,
+        rrs_m5_threshold_short=-44.0, rrs_d1_threshold_short=-45.0,
     )
-    prepared_strict = _prepare_m5(
-        universe_m1={"AAPL": universe["aapl_m1"]},
-        universe_m5={"AAPL": universe["aapl_m5"]},
-        universe_d1={"AAPL": universe["aapl_d1"]},
-        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
-        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
-        sectors={"AAPL": "Technology"},
-        config=strict,
-    )
-    # A threshold of -100 on the RRS gate can never fail (rolling_rrs_m5 is always >= -100);
-    # a threshold of +100 can never pass. If the config field isn't actually threaded through,
-    # both runs would produce identical (default-threshold) gate_long series.
-    assert prepared_loose.gate_long["AAPL"].sum() >= prepared_strict.gate_long["AAPL"].sum()
-    assert not prepared_strict.gate_long["AAPL"].any()
+    with patch(
+        "rs_spy.backtest.engine_m5.gates.gates_pass_long_m5",
+        wraps=gates_module.gates_pass_long_m5,
+    ) as mock_long:
+        _prepare_m5(
+            universe_m1={"AAPL": universe["aapl_m1"]},
+            universe_m5={"AAPL": universe["aapl_m5"]},
+            universe_d1={"AAPL": universe["aapl_d1"]},
+            spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+            qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+            sectors={"AAPL": "Technology"},
+            config=config,
+        )
+    assert mock_long.called
+    _, kwargs = mock_long.call_args
+    assert kwargs["rrs_m5_threshold"] == 42.0
+    assert kwargs["rrs_d1_threshold"] == 43.0
 
 
-def test_prepare_m5_honors_rrs_d1_threshold_config_both_directions(universe):
-    strict_long = BacktestConfigM5(rrs_d1_threshold_long=100.0)
-    strict_short = BacktestConfigM5(shorts_enabled=True, rrs_d1_threshold_short=-100.0)
-    prepared_long = _prepare_m5(
-        universe_m1={"AAPL": universe["aapl_m1"]}, universe_m5={"AAPL": universe["aapl_m5"]},
-        universe_d1={"AAPL": universe["aapl_d1"]}, spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"],
-        spy_d1=universe["spy_d1"], qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
-        sectors={"AAPL": "Technology"}, config=strict_long,
+def test_prepare_m5_threads_rrs_thresholds_into_short_gate_call(universe):
+    config = BacktestConfigM5(
+        rrs_m5_threshold_long=42.0, rrs_d1_threshold_long=43.0,
+        rrs_m5_threshold_short=-44.0, rrs_d1_threshold_short=-45.0,
     )
-    prepared_short = _prepare_m5(
-        universe_m1={"AAPL": universe["aapl_m1"]}, universe_m5={"AAPL": universe["aapl_m5"]},
-        universe_d1={"AAPL": universe["aapl_d1"]}, spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"],
-        spy_d1=universe["spy_d1"], qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
-        sectors={"AAPL": "Technology"}, config=strict_short,
-    )
-    assert not prepared_long.gate_long["AAPL"].any()
-    assert not prepared_short.gate_short["AAPL"].any()
+    with patch(
+        "rs_spy.backtest.engine_m5.gates.gates_pass_short_m5",
+        wraps=gates_module.gates_pass_short_m5,
+    ) as mock_short:
+        _prepare_m5(
+            universe_m1={"AAPL": universe["aapl_m1"]},
+            universe_m5={"AAPL": universe["aapl_m5"]},
+            universe_d1={"AAPL": universe["aapl_d1"]},
+            spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+            qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+            sectors={"AAPL": "Technology"},
+            config=config,
+        )
+    assert mock_short.called
+    _, kwargs = mock_short.call_args
+    assert kwargs["rrs_m5_threshold"] == -44.0
+    assert kwargs["rrs_d1_threshold"] == -45.0
