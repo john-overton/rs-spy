@@ -10,7 +10,9 @@ LONG_TRIGGER / SHORT_TRIGGER fire, classify SPY's own forward return over
 each horizon as UP/FLAT/DOWN and compare against the all-bars base rate.
 Fires have real sample sizes (~1,591 long / ~561 short over 5 years), unlike
 the 3-trade backtest sample. Needs no backtest run -- only the bias engine's
-own output and SPY's M5 close series.
+own output and SPY's M5 close series. Returns are measured from the fire
+bar's close; the live engine enters via a next-bar limit order -- read these
+numbers as signal skill vs. base rate, not achievable PnL.
 """
 import pandas as pd
 

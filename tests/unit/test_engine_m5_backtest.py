@@ -924,7 +924,7 @@ def _funnel_scenario_bars(n, calendar):
     opens = [c - 0.02 for c in closes]
     highs = [c + 0.3 for c in closes]
     lows = [c - 0.2 for c in closes]
-    if n > 6:
+    if n > 6:  # bar-6 crash candle only exists in the n>=7 scenarios; n=6 callers use a crash-free fixture
         lows[6] = 89.0
     return pd.DataFrame(
         {"open": opens, "high": highs, "low": lows, "close": closes, "volume": [1_000.0] * n}, index=calendar

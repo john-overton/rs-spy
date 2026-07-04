@@ -16,10 +16,11 @@ Stop placement (§3) is simplified: the spec's "lowest of the qualifying dip's s
 low and (entry - 1.0*ATR_M5)" alternative is reduced to the ATR-only distance --
 this project doesn't track "the qualifying dip's swing low" as distinct structure
 (matching backtest/engine.py's own D1 stop precedent, which is also ATR-only
-distance rather than structure-based). Consequence: the resulting stop distance
-(1.0xATR) is always inside the spec's 1.5xATR cap, so the "skip the entry rather
-than widen the stop" branch never triggers under this simplification -- disclosed,
-not silently dropped.
+distance rather than structure-based). Consequence: the resulting stop distance is
+`stop_atr_mult`xATR (default 1.0), deliberately never clamped to the spec's
+1.5xATR cap so swept `stop_atr_mult` values are honored; the cap and the "skip the
+entry rather than widen the stop" branch belong to the not-implemented swing-low
+variant -- disclosed, not silently dropped.
 
 "or breakeven if better" (§4's NEUTRAL-bias tightening rule) is a discretionary
 four words with no formula given. Read here as: tighten toward entry - 0.5*ATR,

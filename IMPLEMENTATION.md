@@ -1096,7 +1096,15 @@ rather than repeated here.
     gap rows. Regression test:
     `test_dip_arm_cross_uses_symbols_last_native_reading_across_a_gap_bar`.
 24. ~~**`scripts/run_validation_studies.py`'s "shared baseline" doesn't fully eliminate the
-    redundant precompute**~~ (found during the M7 study-suite's Task 6 review) -- **RESOLVED (M7.5 Phase 0).** `run_m5_backtest` now accepts
+    redundant precompute**~~ (found during the M7 study-suite's Task 6 review) -- the script calls
+    `_prepare_m5` explicitly to get `baseline_prepared`, then calls `run_m5_backtest` with the same
+    arguments right after, but `run_m5_backtest` has no parameter to accept an already-built
+    `PreparedM5` and always recomputes one internally. So the baseline's expensive per-symbol
+    precompute genuinely runs twice (once wasted) rather than once. Not a correctness bug -- just
+    one extra ~15-20 minute run out of the suite's ~17 total. Fixing this cleanly needs a small,
+    additive `run_m5_backtest(..., prepared: PreparedM5 | None = None)` parameter in
+    `engine_m5.py`, out of the study-suite plan's scope; worth picking up in a future pass. --
+    **RESOLVED (M7.5 Phase 0).** `run_m5_backtest` now accepts
     `prepared: PreparedM5 | None = None` and skips its internal `_prepare_m5` when
     given; `scripts/run_validation_studies.py`'s baseline passes its own
     `baseline_prepared`. The docstring lists which config fields are event-loop-only
