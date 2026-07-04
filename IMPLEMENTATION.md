@@ -28,16 +28,19 @@ were never wrong, only date labels.
   1252 trading days / 128 symbols, root-caused (not just reported) via
   direct gate-pass-rate/watchlist-state inspection.
 - **M7: full validation study suite (08 §3), M5 cadence — complete (this
-  checkpoint), pending final whole-branch review.** Pre-work fixed the
-  ADV-gate cadence bug found during M6 (0 → 3 real trades) and built a
-  committed full-universe gate-pass-rate/watchlist-state audit tool. Built
-  and ran the full 5-study suite (ablation, walk-away, RRS sensitivity,
-  bias confusion matrix, time-of-day/regime slicing) against the real
-  3-trade sample, per the user's explicit direction to proceed rather than
-  first expand the universe or loosen gates. Real, actionable finding: the
-  RRS sensitivity sweep found `rrs_m5_window=18` produces 10 trades (vs. 3
-  at the spec default of 12) — see "M7: full validation study suite" section
-  below for the complete results and interpretation. Test suite: 202 tests.
+  checkpoint).** Pre-work fixed the ADV-gate cadence bug found during M6
+  (0 → 3 real trades) and built a committed full-universe gate-pass-rate/
+  watchlist-state audit tool. Built and ran the full 5-study suite
+  (ablation, walk-away, RRS sensitivity, bias confusion matrix, time-of-day/
+  regime slicing) against the real 3-trade sample, per the user's explicit
+  direction to proceed rather than first expand the universe or loosen
+  gates. The final whole-branch review found and fixed one real bug (the
+  ablation study's `disable_bias` lever was a silent no-op in the M5
+  engine); the ablation study was re-run against real data after the fix.
+  Real, actionable finding: the RRS sensitivity sweep found
+  `rrs_m5_window=18` produces 10 trades (vs. 3 at the spec default of 12) —
+  see "M7: full validation study suite" section
+  below for the complete results and interpretation. Test suite: 204 tests.
 
 ## TL;DR
 
@@ -1110,6 +1113,17 @@ rather than repeated here.
     rather than forecasting SPY in isolation -- but a real, honest finding worth further
     investigation (e.g. a horizon sweep) before relying on the bias engine's bucket as a
     standalone directional signal.
+27. ~~`run_m5_backtest`'s `disabled_gates={"bias"}` was a silent no-op~~ **RESOLVED (`commit
+    7f224b6`)**, found during the M7 final whole-branch review. `bias_ok_long`/`bias_ok_short`
+    never consulted `config.disabled_gates`, unlike the D1 engine's already-correct handling --
+    meaning the gate-ablation study's `disable_bias` run was guaranteed identical to baseline by
+    construction, not a real test of that lever. Significant because 100% of this milestone's real
+    trades enter via the 04 §6 trigger-bypass path, which itself requires
+    `bias_ok_long`/`bias_ok_short` -- a genuine bias-disable was exactly the lever most likely to
+    matter. Fixed for both directions (bypasses the bucket check, the 2-bar hold, and the short
+    side's regime exclusion); the ablation study was re-run against real data after the fix (see
+    the M7 study-suite section below for the corrected result: disabling `bias` does unlock 1
+    additional trade, matching `rrs`/`ha`/`sma`'s pattern).
 
 ## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
@@ -1200,9 +1214,10 @@ recalibration pass rather than a hypothesis).
 
 Built via the same subagent-driven-development workflow as every prior milestone: 6 tasks (1
 config-knob prerequisite + 5 study modules/CLI), each with a fresh implementer and independent
-task reviewer, one fix-and-re-review round out of 6. Plan:
+task reviewer, one fix-and-re-review round out of 6, plus one more fix-and-re-review round from
+the final whole-branch review's `disabled_gates={"bias"}` finding. Plan:
 `docs/superpowers/plans/2026-07-03-m7-validation-study-suite.md`. Test suite: 190 (M7 pre-work
-checkpoint) -> 202.
+checkpoint) -> 204.
 
 **What was built:**
 - `BacktestConfigM5.rrs_m5_threshold_long/short` + `rrs_d1_threshold_long/short` (commits
@@ -1236,23 +1251,50 @@ checkpoint) -> 202.
   this plan's scope to fix. Worth a small `run_m5_backtest(..., prepared=None)` optional-parameter
   addition in a future pass.
 
-**Real bugs found and fixed:** none beyond the M7 pre-work's ADV-gate fix (documented above) --
-this plan's 6 build tasks needed only 1 fix-and-re-review round, and that fix was to a vacuous
-test, not production code (the production code in that task was approved first pass).
+**Real bugs found and fixed:** the 6 build tasks themselves needed only 1 fix-and-re-review round
+(a vacuous test, not production code -- the production code in that task was approved first
+pass). But the **final whole-branch review** (opus, range `7aeb333..6304f78`, 14 commits) found a
+real, non-trivial production bug: `run_m5_backtest`'s `bias_ok_long`/`bias_ok_short` computation
+never consulted `config.disabled_gates` at all, unlike the D1 engine's already-correct handling --
+making the ablation study's `disable_bias` run a **guaranteed no-op duplicate of baseline by
+construction**, not a real test of that lever. This mattered specifically because 100% of this
+milestone's real trades enter via the 04 §6 trigger-bypass mechanism, which itself requires
+`bias_ok_long`/`bias_ok_short` to be true -- making a genuine bias-disable the single most likely
+lever to change the real trade count, not a harmless inert rule like `vwap` turned out to be.
+Fixed (commit `7f224b6`, reviewed clean, first pass): `bias_ok_long`/`bias_ok_short` now bypass the
+whole bias-family-plus-hysteresis-plus-regime-exclusion check when `"bias"` is in
+`disabled_gates`, for both directions (D1 only needed LONG, since D1's own ablation study is
+long-only; M5's is bidirectional). Purely additive -- every caller not setting that flag sees
+identical behavior. The reviewer hand-traced both new regression tests' watchlist-state
+transitions and independently reproduced the bug-injection (tests fail pre-fix with an empty
+trade log, pass post-fix). Only the ablation study's `disable_bias` variant was affected by this
+bug -- nothing else in the suite touches `disabled_gates` -- so only that one study was re-run
+against real data after the fix (not the full 3-hour suite); its section below reflects the
+corrected result.
 
 **Real run**, `python scripts/run_validation_studies.py`, full 130-symbol/5-year warehouse
 (`shorts_enabled=True` throughout, so both books actually traded), user-run directly (not
-backgrounded by the agent) for full visibility, ~3 hours wall clock:
+backgrounded by the agent) for full visibility, ~3 hours wall clock (ablation section below
+reflects a corrected, agent-run re-run of just that one study after the bias fix, ~1.5 hours):
 
-- **3.1 Gate ablation**: baseline 3 trades; disabling `rrs`, `ha`, or `sma` individually each
-  unlocked exactly 1 additional distinct trade (a different symbol each time -- `ORCL`
-  2023-06-14 via `rrs`, `KLAC` 2026-06-10 via `ha`, `AMGN` 2025-02-03 via `sma`); disabling `bias`,
-  `rrs_m5`, or `vwap` unlocked nothing. 6 total distinct trades scored across all 7 runs, split 3
-  at rule_count=5 (missing exactly one of the 6 rules) and 3 at rule_count=6 (all rules
-  satisfied) -- too small a sample for win-rate/expectancy-by-rule-count to be meaningful (M3.5's
-  own D1 version found zero rules ever unlocked a trade; the fuller M5 rule set is at least
-  slightly more informative than that, but still far short of a real signal). No SHORT trades
-  occurred in any ablation run.
+- **3.1 Gate ablation** (re-run after fixing the `disabled_gates={"bias"}` no-op bug documented
+  just above; baseline 3 trades). Disabling `bias`, `rrs`, `ha`, or `sma` individually each
+  unlocked exactly 1 additional distinct trade (a different symbol each
+  time -- `AMD` 2023-03-16 via `bias`, `ORCL` 2023-06-14 via `rrs`, `KLAC` 2026-06-10 via `ha`,
+  `AMGN` 2025-02-03 via `sma`); disabling `rrs_m5` or `vwap` unlocked nothing. 7 total distinct
+  trades scored across all 7 runs, split 3 at rule_count=5 (missing exactly one of the 6 rules)
+  and 4 at rule_count=6 (all rules satisfied) -- too small a sample for
+  win-rate/expectancy-by-rule-count to be meaningful (M3.5's own D1 version found zero rules ever
+  unlocked a trade; the fuller M5 rule set is at least slightly more informative than that, but
+  still far short of a real signal). No SHORT trades occurred in any ablation run. Note: the
+  per-trade `bias_ok` column in `ablation_trades.csv` reflects only the raw bias-bucket check at
+  the signal bar (matching `_rule_ok_long`'s classification logic), not the real event loop's
+  stricter 2-consecutive-bar-hold entry requirement (`engine_m5.py`'s `bias_ok_long`) -- so `AMD`'s
+  scored row shows `bias_ok=True` even though disabling `bias` was what let it actually enter (its
+  signal bar's bucket alone qualified, but the bar before it didn't, so the real 2-bar-hold gate
+  blocked it until the whole check was bypassed). Not a bug in the scoring, just a real distinction
+  between the classification yardstick and the engine's actual (stricter) gating logic, worth
+  knowing before reading `rule_count` as identical to "would enter without this rule."
 - **3.2 Walk-away analysis**: 747 real entry signals (`IDLE -> QUALIFIED`, both directions) --
   vastly more than the 6 that ever became a scored trade above, confirming the qualification step
   itself is not the bottleneck; the bottleneck is what happens after qualification (dip-arming /
