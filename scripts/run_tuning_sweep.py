@@ -9,10 +9,15 @@ prepare-baked, hence one precompute per (window, threshold) cell.
 
 Each run writes reports/tuning/<run_id>/{config.json,trades.csv,funnel.json}
 and appends one row to reports/tuning/sweep_results.csv (the raw feed for
-docs/tuning/ledger.csv). run_id convention: r23-w<window>-t<thr*10>-s<mult*10>,
-e.g. r23-w18-t05-s15.
+docs/tuning/ledger.csv). run_id convention: <run_tag>-w<window>-t<thr*10>-s<mult*10>,
+e.g. r23-w18-t05-s15 or r1a-w18-t10-s10.
+
+Overrides via --config-json are applied to base_config BEFORE _prepare_m5, so
+prepare-baked overrides (e.g. dip_hold_mode) are honored. Note: stop_atr_mult in
+the JSON would be overwritten by the --stop-mults loop, so it should be left out.
 
 Usage: python scripts/run_tuning_sweep.py --window 18
+       python scripts/run_tuning_sweep.py --window 18 --run-tag r1a --config-json '{"dip_hold_mode": "d1_session"}'
 """
 import csv
 import gc
@@ -62,9 +67,12 @@ def main(
     thresholds: str = typer.Option("1.0,0.5,0.0", help="comma-separated rrs_m5 long thresholds (short side mirrored negative)"),
     stop_mults: str = typer.Option("1.0,1.5,2.0", help="comma-separated stop_atr_mult values"),
     shorts: bool = typer.Option(True, help="shorts_enabled (True matches the M7 study-suite convention)"),
+    config_json: str = typer.Option("{}", help="JSON object of BacktestConfigM5 field overrides, applied last"),
+    run_tag: str = typer.Option("r23", help="run_id prefix for this batch"),
 ) -> None:
     thr_list = [float(t) for t in thresholds.split(",")]
     mult_list = [float(m) for m in stop_mults.split(",")]
+    overrides = json.loads(config_json)
 
     settings = get_settings()
     universe = load_universe(settings.config_dir / "universe.yaml")
@@ -103,6 +111,7 @@ def main(
             rrs_m5_threshold_long=thr,
             rrs_m5_threshold_short=-thr,
         )
+        base_config = replace(base_config, **overrides)
         typer.echo(f"[w{window} t{thr}] preparing (~15 min)...")
         t0 = time.time()
         prepared = _prepare_m5(
@@ -114,7 +123,7 @@ def main(
 
         for mult in mult_list:
             config = replace(base_config, stop_atr_mult=mult)
-            run_id = f"r23-w{window}-t{_fmt(thr)}-s{_fmt(mult)}"
+            run_id = f"{run_tag}-w{window}-t{_fmt(thr)}-s{_fmt(mult)}"
             result = run_m5_backtest(
                 trade_m1, trade_m5, trade_d1, all_m1[spy], all_m5[spy], all_d1[spy],
                 all_m1[qqq], all_m5[qqq], sectors, earnings_blackout, config,
