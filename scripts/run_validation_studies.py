@@ -5,7 +5,7 @@ section) -- the same relationship run_backtest_intraday.py has to
 run_backtest_d1.py.
 
 **Runtime**: this is SLOW. One shared baseline backtest + 6 gate-ablation
-re-runs + 9 RRS-sensitivity re-runs = ~16 full run_m5_backtest invocations,
+re-runs + 9 RRS-sensitivity re-runs = ~16 run_m5_backtest invocations (the baseline shares its own _prepare_m5 via prepared=),
 each on the order of 15-20 minutes for the full curated universe (the M5
 precompute layer's non-vectorized indicator loops dominate -- see this
 repo's README for the identical note on run_backtest_intraday.py). Expect
@@ -62,6 +62,7 @@ def main(horizon_bars_walk_away: int = 78, horizon_bars_bias: int = 12) -> None:
     baseline_result = run_m5_backtest(
         trade_m1, trade_m5, trade_d1, all_m1[spy], all_m5[spy], all_d1[spy],
         all_m1[qqq], all_m5[qqq], sectors, earnings_blackout, base_config,
+        prepared=baseline_prepared,
     )
     baseline_trades = baseline_result.trades_df()
     typer.echo(f"Baseline trades: {len(baseline_result.trades)}")

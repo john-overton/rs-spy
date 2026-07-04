@@ -293,12 +293,25 @@ def run_m5_backtest(
     sectors: dict,
     earnings_blackout: dict | None = None,
     config: BacktestConfigM5 | None = None,
+    prepared: PreparedM5 | None = None,
 ) -> BacktestResultM5:
+    """Bar-by-bar M5 event loop. When `prepared` is given, the ~15-20 minute
+    _prepare_m5 precompute is skipped and the caller guarantees it was built
+    from the SAME universe/data arguments with a config whose prepare-baked
+    fields match. Safe to vary against a shared `prepared` (event-loop-only):
+    risk_per_trade_pct, max_concurrent_*, short_size_multiplier,
+    min_list_score, min_hold_score, top_n_*, max_per_sector, shorts_enabled,
+    starting_equity, stop_atr_mult, max_entries_per_symbol_*,
+    expected_hold_minutes, unfilled_cancel_bars, and disabled_gates only for
+    "bias". Baked into `prepared` (need a fresh _prepare_m5 to vary):
+    min_adv_shares, non-bias disabled_gates entries, rrs_m5_window,
+    use_qqq_crosscheck, and the four rrs_*_threshold_* fields."""
     config = config or BacktestConfigM5()
-    prepared = _prepare_m5(
-        universe_m1, universe_m5, universe_d1, spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5,
-        sectors, earnings_blackout, config,
-    )
+    if prepared is None:
+        prepared = _prepare_m5(
+            universe_m1, universe_m5, universe_d1, spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5,
+            sectors, earnings_blackout, config,
+        )
     calendar = prepared.calendar
     et_tod = _et_time_of_day(calendar)
     sessions = calendar.normalize()

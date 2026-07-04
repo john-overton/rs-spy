@@ -1053,3 +1053,60 @@ def test_funnel_is_present_and_all_zero_when_nothing_ever_qualifies(monkeypatch)
     }
     assert set(result.funnel) == expected_keys
     assert all(v == 0 for v in result.funnel.values())
+
+
+def test_run_m5_backtest_accepts_a_prebuilt_prepared_and_skips_prepare(monkeypatch):
+    """Known-limitation #24: passing prepared= must skip the ~15-20 minute
+    _prepare_m5 recompute entirely."""
+    sym = "PREP"
+    n = 6
+    calendar = pd.date_range("2026-03-02 09:30", periods=n, freq="5min", tz="America/New_York").tz_convert("UTC")
+    prepared = _build_prepared_for_run_loop(
+        calendar,
+        bias_by_bar=[BULL] * n,
+        regime_by_bar=[CHOP] * n,
+        bars_by_symbol={sym: _funnel_scenario_bars(n, calendar)},
+        rrs_by_symbol={sym: [1.0] * n},
+        gate_long_by_symbol={sym: _flat_series(calendar, False)},
+    )
+
+    def _explode(*a, **k):
+        raise AssertionError("_prepare_m5 must not be called when prepared= is supplied")
+
+    monkeypatch.setattr(engine_m5, "_prepare_m5", _explode)
+    result = run_m5_backtest(
+        universe_m1={}, universe_m5={sym: pd.DataFrame()}, universe_d1={},
+        spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
+        qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
+        sectors={sym: "Technology"},
+        config=BacktestConfigM5(),
+        prepared=prepared,
+    )
+    assert result.trades_df().empty  # gate is False throughout; the point is it ran at all
+
+
+def test_run_m5_backtest_with_prepared_reproduces_the_from_scratch_result(universe):
+    """Same config + same data: run_m5_backtest(prepared=...) must be
+    bit-for-bit identical to letting it call _prepare_m5 itself."""
+    config = BacktestConfigM5()
+    kwargs = dict(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        config=config,
+    )
+    prepared = _prepare_m5(
+        universe_m1=kwargs["universe_m1"], universe_m5=kwargs["universe_m5"],
+        universe_d1=kwargs["universe_d1"],
+        spy_m1=kwargs["spy_m1"], spy_m5=kwargs["spy_m5"], spy_d1=kwargs["spy_d1"],
+        qqq_m1=kwargs["qqq_m1"], qqq_m5=kwargs["qqq_m5"],
+        sectors=kwargs["sectors"], config=config,
+    )
+    r_shared = run_m5_backtest(**kwargs, prepared=prepared)
+    r_scratch = run_m5_backtest(**kwargs)
+    pd.testing.assert_series_equal(r_shared.equity_curve, r_scratch.equity_curve)
+    pd.testing.assert_frame_equal(r_shared.trades_df(), r_scratch.trades_df())
+    assert r_shared.funnel == r_scratch.funnel
