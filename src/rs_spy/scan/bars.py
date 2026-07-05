@@ -41,7 +41,10 @@ def refresh_daily_bars(
     1. Manifest-driven historical backfill over [end - years, end) -- cheap
        no-op for every already-done (symbol, year) unit.
     2. Unconditional tail re-fetch from min(end - tail_days, newest stored
-       bar) -- picks up days the current-year manifest unit can't see.
+       bar) -- picks up days the current-year manifest unit can't see. The
+       "newest stored bar" is scoped to `symbols` (the symbols passed to this
+       call), not the whole table: other, fresher symbols in the same
+       warehouse must not mask genuine staleness in the requested subset.
     """
     start = end - timedelta(days=365 * years + 5)
     backfill(
@@ -50,7 +53,11 @@ def refresh_daily_bars(
     )
 
     tail_start = end - timedelta(days=tail_days)
-    latest = con.execute("SELECT max(ts) FROM bars WHERE timespan = 'day'").fetchone()[0]
+    latest = con.execute(
+        "SELECT max(ts) FROM bars WHERE timespan = 'day' "
+        "AND symbol IN (SELECT unnest(?::VARCHAR[]))",
+        [symbols],
+    ).fetchone()[0]
     if latest is not None:
         latest_dt = pd.Timestamp(latest).tz_localize("UTC").to_pydatetime()
         tail_start = min(tail_start, latest_dt)

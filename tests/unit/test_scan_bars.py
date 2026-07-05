@@ -69,6 +69,23 @@ def test_tail_start_self_heals_back_to_the_newest_stored_bar():
     assert tail_start <= stale_end
 
 
+def test_tail_self_heal_is_scoped_to_the_requested_symbols():
+    con = connect_scan(Path(":memory:"))
+    client = FakeClient()
+    stale_end = END - timedelta(days=30)
+    # B is stale (last bar 30 days before END); A is fresh (last bar at END).
+    refresh_daily_bars(con, client, ["B"], stale_end, years=1, tail_days=7)
+    refresh_daily_bars(con, client, ["A"], END, years=1, tail_days=7)
+
+    # Refresh only the stale symbol B. If the self-heal query is table-wide
+    # it will see A's fresh max(ts) and collapse the tail to END - tail_days,
+    # masking B's genuine staleness.
+    refresh_daily_bars(con, client, ["B"], END, years=1, tail_days=7)
+    tail_symbols, tail_start, _ = client.calls[-1]
+    assert tail_symbols == ["B"]
+    assert tail_start <= stale_end
+
+
 def test_symbol_batching_splits_large_symbol_lists():
     con = connect_scan(Path(":memory:"))
     client = FakeClient()
