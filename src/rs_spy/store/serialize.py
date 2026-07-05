@@ -27,6 +27,7 @@ def config_to_jsonb(config: BacktestConfigM5) -> dict:
     d = dataclasses.asdict(config)
     d["disabled_gates"] = sorted(d["disabled_gates"])
     d["extra_symbols"] = list(d["extra_symbols"])
+    d["trade_symbols_override"] = list(d["trade_symbols_override"])
     return d
 
 def config_from_jsonb(data: dict) -> BacktestConfigM5:
@@ -39,6 +40,8 @@ def config_from_jsonb(data: dict) -> BacktestConfigM5:
         kwargs["disabled_gates"] = frozenset(kwargs["disabled_gates"])
     if "extra_symbols" in kwargs:
         kwargs["extra_symbols"] = tuple(kwargs["extra_symbols"])
+    if "trade_symbols_override" in kwargs:
+        kwargs["trade_symbols_override"] = tuple(kwargs["trade_symbols_override"])
     return BacktestConfigM5(**kwargs)
 
 

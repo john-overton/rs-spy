@@ -91,6 +91,13 @@ class BacktestConfigM5:
     # of the curated universe. Lives on the config so the runs-store JSONB
     # records exactly which onboarded symbols each tagged run included.
     extra_symbols: tuple = ()
+    # M10 campaign: which universe YAML the jobs runner loads (benchmarks,
+    # sectors, earnings blackout), and an optional cohort subset that REPLACES
+    # the trade list. Both INERT inside this engine -- consumed by
+    # jobs/runner.py; stored on the config so the runs-store JSONB records
+    # exactly what each run traded.
+    universe_file: str = "universe.yaml"
+    trade_symbols_override: tuple = ()
 
 
 @dataclass

@@ -43,10 +43,22 @@ def _git_sha() -> str | None:
 
 
 def _trade_symbols(universe, config: BacktestConfigM5) -> list[str]:
-    """Curated trade symbols plus config.extra_symbols (M9 onboarding),
-    order-preserving, minus anything already curated or a benchmark."""
+    """Trade list for this run: the universe's curated symbols plus
+    config.extra_symbols (M9 onboarding) -- or, when
+    config.trade_symbols_override is non-empty (M10 cohorts), exactly that
+    subset (validated against curated+extras so a typo fails the run loudly
+    instead of silently trading nothing)."""
     known = set(universe.all_symbols)
     extra = [s for s in config.extra_symbols if s not in known]
+    if config.trade_symbols_override:
+        allowed = set(universe.trade_symbols) | set(config.extra_symbols)
+        unknown = [s for s in config.trade_symbols_override if s not in allowed]
+        if unknown:
+            raise ValueError(
+                f"trade_symbols_override contains symbols not in "
+                f"{config.universe_file} or extra_symbols: {unknown}"
+            )
+        return list(config.trade_symbols_override)
     return [*universe.trade_symbols, *extra]
 
 
@@ -87,7 +99,7 @@ def _execute_backtest(config: BacktestConfigM5):
     """Load bars (warehouse read-only) and run the M5 backtest. Wiring mirrors
     scripts/run_backtest_intraday.py."""
     settings = get_settings()
-    universe = load_universe(settings.config_dir / "universe.yaml")
+    universe = load_universe(settings.config_dir / config.universe_file)
     earnings_blackout = load_earnings_blackout(settings.config_dir / "reference_overrides.yaml")
 
     warehouse_path = settings.resolved_warehouse_path()
