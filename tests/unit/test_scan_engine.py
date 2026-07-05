@@ -8,7 +8,13 @@ from rs_spy.data.alpaca_client import ASSET_COLUMNS
 from rs_spy.data.ingest import _write_bars
 from rs_spy.scan.bars import connect_scan
 from rs_spy.scan.config import ScanConfig
-from rs_spy.scan.engine import GATE_ORDER, ScanCoverageError, apply_gates, compute_scan_metrics, run_universe_scan
+from rs_spy.scan.engine import (
+    GATE_ORDER,
+    ScanCoverageError,
+    apply_gates,
+    compute_scan_metrics,
+    run_universe_scan,
+)
 
 CFG = ScanConfig()  # iex defaults: min_price=10, adv_window=20
 
@@ -205,3 +211,21 @@ def test_run_universe_scan_end_to_end_pass_and_coverage_refusal():
     assert weekend.dayofweek in (5, 6)
     with pytest.raises(ScanCoverageError):
         run_universe_scan(con, assets, weekend, CFG)
+
+
+def test_tz_aware_as_of_matches_the_naive_equivalent():
+    # The codebase's own "now" convention is datetime.now(timezone.utc) (see
+    # data/manifest.py); a tz-aware as_of must not silently break the coverage
+    # check (pandas evaluates naive-vs-aware equality as all-False, no raise).
+    assets = _assets([_asset_row("AAA")])
+    con = _seeded_con([_bar_frame("AAA", DAYS, close=50.0, volume=int(CFG.min_adv_shares * 2))])
+    naive = run_universe_scan(con, assets, DAYS[-1], CFG)
+    aware = run_universe_scan(con, assets, DAYS[-1].tz_localize("UTC"), CFG)
+    assert aware.passing == naive.passing == ["AAA"]
+
+
+def test_empty_bars_table_refuses_rather_than_emitting_an_empty_snapshot():
+    assets = _assets([_asset_row("AAA")])
+    con = _seeded_con([])  # bars table exists, zero rows
+    with pytest.raises(ScanCoverageError):
+        run_universe_scan(con, assets, DAYS[-1], CFG)

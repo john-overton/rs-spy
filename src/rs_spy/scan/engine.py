@@ -80,9 +80,13 @@ def compute_scan_metrics(
     Causality by construction: the WHERE clause admits only bars dated <= as_of
     (daily bars are timestamped at midnight ET = 04:00/05:00 UTC, so CAST(ts AS
     DATE) is the ET session date). The ADV window is the symbol's last
-    `adv_window` BARS, not calendar days (see task note).
+    `adv_window` BARS, not calendar days (see task note). A tz-aware `as_of`
+    is converted to its UTC calendar date (the module's date convention).
     """
-    as_of_date = pd.Timestamp(as_of).date()
+    as_of = pd.Timestamp(as_of)
+    if as_of.tzinfo is not None:
+        as_of = as_of.tz_convert("UTC").tz_localize(None)
+    as_of_date = as_of.date()
     df = con.execute(
         """
         WITH ranked AS (
@@ -118,9 +122,17 @@ def run_universe_scan(
     as_of=today against tonight's refreshed bars is the live scan; as_of=any
     past trading date reconstructs the universe as it would have been (with
     the disclosed survivorship limit: `assets` is always the CURRENT listing).
+
+    `as_of` may be tz-aware (the codebase's "now" convention is
+    datetime.now(timezone.utc), see data/manifest.py); it is normalized to a
+    naive UTC calendar timestamp up front so the last_bar_date comparison
+    below (tz-naive, from CAST(ts AS DATE)) never silently evaluates
+    naive-vs-aware equality as all-False.
     """
     config = config or ScanConfig()
     as_of = pd.Timestamp(as_of)
+    if as_of.tzinfo is not None:
+        as_of = as_of.tz_convert("UTC").tz_localize(None)
     metrics = compute_scan_metrics(con, as_of, adv_window=config.adv_window)
     evaluated, funnel = apply_gates(assets, metrics, config)
 
