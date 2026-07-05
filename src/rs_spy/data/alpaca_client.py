@@ -9,10 +9,14 @@ from datetime import datetime
 
 import pandas as pd
 from alpaca.common.exceptions import APIError
-from alpaca.data.enums import Adjustment, DataFeed
+from alpaca.data.enums import Adjustment, DataFeed, MostActivesBy
+from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import MarketMoversRequest, MostActivesRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import AssetClass, AssetStatus
+from alpaca.trading.requests import GetAssetsRequest
 
 from rs_spy.config import Settings
 from rs_spy.data.rate_limiter import SlidingWindowLimiter
@@ -42,6 +46,20 @@ BAR_COLUMNS = [
     "trade_count",
 ]
 
+ASSET_COLUMNS = [
+    "symbol",
+    "name",
+    "exchange",
+    "tradable",
+    "shortable",
+    "fractionable",
+    "optionable",
+]
+
+# Alpaca marks option availability as an entry in Asset.attributes; the exact
+# label has drifted across API versions, so accept both known spellings.
+_OPTION_ATTRIBUTES = {"options_enabled", "has_options"}
+
 
 class AlpacaClient:
     def __init__(self, settings: Settings):
@@ -51,6 +69,15 @@ class AlpacaClient:
                 "Copy .env.example to .env and fill in your free Alpaca account keys."
             )
         self._client = StockHistoricalDataClient(
+            api_key=settings.alpaca_api_key_id,
+            secret_key=settings.alpaca_api_secret_key,
+        )
+        self._trading_client = TradingClient(
+            api_key=settings.alpaca_api_key_id,
+            secret_key=settings.alpaca_api_secret_key,
+            paper=True,
+        )
+        self._screener_client = ScreenerClient(
             api_key=settings.alpaca_api_key_id,
             secret_key=settings.alpaca_api_secret_key,
         )
@@ -96,6 +123,57 @@ class AlpacaClient:
                     }
                 )
         return pd.DataFrame(rows, columns=BAR_COLUMNS)
+
+    def fetch_assets(self) -> pd.DataFrame:
+        """All active US-equity assets, normalized to ASSET_COLUMNS.
+
+        Alpaca has no security-type field (common stock vs ETF/ADR are all
+        `us_equity`) and no shares float -- the scan's listing gate works from
+        name/exchange heuristics instead (see scan/config.py).
+        """
+        self._limiter.acquire()
+        assets = self._trading_client.get_all_assets(
+            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        )
+        rows = []
+        for a in assets:
+            attributes = set(a.attributes or [])
+            rows.append(
+                {
+                    "symbol": a.symbol,
+                    "name": a.name or "",
+                    "exchange": str(getattr(a.exchange, "value", a.exchange)),
+                    "tradable": bool(a.tradable),
+                    "shortable": bool(a.shortable),
+                    "fractionable": bool(a.fractionable),
+                    "optionable": bool(attributes & _OPTION_ATTRIBUTES),
+                }
+            )
+        return pd.DataFrame(rows, columns=ASSET_COLUMNS)
+
+    def fetch_screener_snapshots(
+        self, top_actives: int = 100, top_movers: int = 50
+    ) -> dict[str, dict]:
+        """Live screener snapshots (most-actives by volume/trades, movers).
+
+        These endpoints are REAL-TIME ONLY (no as-of parameter exists) -- every
+        day not captured is lost forever, hence the nightly recorder. Payloads
+        are raw model_dump(mode="json") dicts, stored verbatim as JSONB.
+        """
+        out: dict[str, dict] = {}
+        self._limiter.acquire()
+        out["most_actives_volume"] = self._screener_client.get_most_actives(
+            MostActivesRequest(by=MostActivesBy.VOLUME, top=top_actives)
+        ).model_dump(mode="json")
+        self._limiter.acquire()
+        out["most_actives_trades"] = self._screener_client.get_most_actives(
+            MostActivesRequest(by=MostActivesBy.TRADES, top=top_actives)
+        ).model_dump(mode="json")
+        self._limiter.acquire()
+        out["market_movers"] = self._screener_client.get_market_movers(
+            MarketMoversRequest(top=top_movers)
+        ).model_dump(mode="json")
+        return out
 
     def _request_with_retry(self, request: StockBarsRequest):
         for attempt in range(1, _MAX_RETRIES + 1):
