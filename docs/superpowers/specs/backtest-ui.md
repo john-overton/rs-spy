@@ -74,3 +74,42 @@ study suite. Both are natural once the core loop proves out.
 - Streamlit refresh mechanism for polling (st_autorefresh vs. manual rerun button) and a sensible interval.
 - Whether the run list should page (`list_runs` already supports `limit`/`offset`) or just cap at N.
 - Charting: Streamlit's built-in `st.line_chart` vs. Altair for the equity curve / comparison overlays.
+
+## Addendum (2026-07-05, pre-plan): decisions + M9/M10 additions
+
+Written after M9 (nightly universe scan) landed and M10 (universe 500 + campaign) was specced;
+this addendum resolves the open questions above and extends v1 scope to the data that now exists.
+
+**Open questions resolved:**
+
+- **Refresh**: `st.fragment(run_every="5s")` around the runs-list/status region (built-in,
+  no extra dependency, scopes the rerun to the fragment). Detail pages refresh on navigation;
+  no global autorefresh.
+- **Run list paging**: newest-first, `limit=50` with a "show more" offset button (reuses
+  `list_runs(limit, offset)`); no full pagination UI in v1.
+- **Charting**: `st.line_chart` everywhere a single wide DataFrame suffices (equity curve,
+  overlaid compare curves); no Altair in v1.
+
+**Structure**: `streamlit run app.py` at repo root; `app.py` is a thin `st.navigation` shell
+over page functions living in `src/rs_spy/ui/` (pure data helpers separated from `st.*`
+rendering so the data layer is unit-testable; pages exercised hermetically with
+`streamlit.testing.v1.AppTest` against a stubbed store). `streamlit` goes in a `ui` extras
+group in `pyproject.toml`.
+
+**Scope additions (new since the original spec):**
+
+1. **Scan & discovery page** — reads the M9 Postgres tables: latest `scan_runs` funnel
+   (metric cards per gate), passing-count history over scan dates (line chart),
+   `universe_snapshots` browser for a chosen date (filterable DataFrame: passed / first_fail),
+   and the `onboarded_symbols` table (with `insufficient_history` badges).
+2. **Campaign view (M10-aware)** — the runs list groups rows whose labels match the M10
+   campaign convention (`m10-<tag>-<variant>-c<n>`); a campaign detail view shows per-cohort
+   status and, once all cohorts finish, the aggregated metrics table via
+   `backtest/aggregate.py`. (Plain single runs render exactly as in the original spec.)
+3. **Config form fields** — the form covers the current `BacktestConfigM5` including the
+   M9/M10 additions (`extra_symbols`, `universe_file`, `trade_symbols_override`) as advanced
+   fields, defaulted and collapsed.
+
+**Explicitly still out of scope for v1**: real-time signals (that is discovery milestone #2 —
+its own spec/brainstorm; the UI will grow a signals page in that milestone, not this one),
+the D1 engine, and triggering the M7 study suite from the UI.
