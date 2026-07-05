@@ -42,6 +42,13 @@ because every unrecorded day is lost forever.
 - **One code path for live and historical**: `run_universe_scan(as_of=...)` reads only the
   warehouse, so `as_of=today` is the nightly scan and `as_of=<past date>` is the backtest
   reconstruction. No divergence between what the backtest assumes and what the live scan does.
+- **Broad daily bars get their own table** (`bars_scan` or similar), separate from the
+  curated-universe `bars` table — the existing loaders, backtests, and manifest bookkeeping
+  for the 130-symbol universe stay untouched, and broad-scan queries can't accidentally bleed
+  into curated-universe results (or vice versa).
+- **Most-active auto-onboarding** (spec-review addition): the nightly job promotes qualifying
+  top-10 most-active symbols into the backtest universe automatically — 5-year minute
+  backfill + a tagged backtest re-run. See "Most-active auto-onboarding" below.
 
 ## Architecture
 
@@ -67,15 +74,19 @@ New package `src/rs_spy/scan/`, plus small extensions to existing modules.
   function over cached daily bars + asset metadata. Returns per-symbol gate outcomes/metrics,
   the passing set, and a per-gate funnel count (the M7.5 funnel pattern applied to discovery,
   so "why did the universe shrink/grow" is always answerable).
-- **`store/` extension** — two tables:
+- **`store/` extension** — three tables:
   - `universe_snapshots(scan_date, symbol, close, adv_shares, adv_dollars, optionable,
     exchange, passed, gate_fail_reasons, ...)` — one row per evaluated symbol per scan date.
   - `screener_snapshots(snapshot_date, endpoint, payload jsonb, captured_at)`.
-  Both upsert-idempotent on their natural keys. A flat artifact (parquet of the passing set
+  - `onboarded_symbols(symbol, onboarded_date, source, history_start, insufficient_history)`
+    — the accumulated most-active additions to the backtest symbol set.
+  All upsert-idempotent on their natural keys. A flat artifact (parquet of the passing set
   per scan date, under `reports/universe_scan/`) is written alongside for grep/notebook use.
 - **`scripts/run_nightly_scan.py`** — the Typer orchestrator: refresh assets → incremental
   daily-bar backfill for all active symbols → `run_universe_scan(as_of=today)` → write
-  snapshots → capture screener endpoints. Safe to run detached (same conventions as
+  snapshots → capture screener endpoints → most-active onboarding (gate-filter, minute
+  backfill, tagged backtest re-run — see "Most-active auto-onboarding" below). Safe to run
+  detached (same conventions as
   `jobs/`); scheduling via launchd/cron is documented in the script docstring, not
   auto-installed.
 
@@ -90,11 +101,50 @@ New package `src/rs_spy/scan/`, plus small extensions to existing modules.
 | 5 | Not halted in prior 5 sessions; not in bankruptcy/delisting | **Dropped** — no historical halt feed available | Disclosed gap |
 | 6 | Optionable (preferred, not required in v1) | `has_options` asset attribute — recorded per symbol, **not gating** | Exact |
 
+## Most-active auto-onboarding
+
+The screener recorder doesn't just archive — each night, the day's **top-10 most-active by
+volume** feed a small onboarding pipeline:
+
+1. **Filter through the scan gates first.** The raw most-actives list is routinely dominated
+   by ETFs (SPY/QQQ/TQQQ are near-permanent members) and sub-$10 movers, none of which are
+   trade candidates under algo-spec 01 §4. Only symbols that pass the universe scan's gates
+   (using their own daily bars, already present via the broad backfill) proceed.
+2. **Backfill minute data if missing.** For qualifying symbols with no cached minute bars: a
+   detached 5-year minute-bar backfill into the existing minute warehouse (manifest-resumable,
+   same machinery as `backfill_intraday.py`; ~340k rows / a few minutes per symbol). Symbols
+   with less than 5 years of history (recent IPOs) backfill whatever exists — see the guard
+   below.
+3. **Record the onboarding.** A store table (`onboarded_symbols`: symbol, onboarded_date,
+   source, history_start) tracks the accumulated additions; the backtest symbol set becomes
+   *curated 130 + onboarded*, without editing `config/universe.yaml`.
+4. **Re-run the backtest.** Once backfill completes, launch a tagged M5 backtest run over the
+   expanded symbol set through the existing detached job runner (`jobs/launch_run`), results
+   landing in the Postgres runs-store like any other run. ("Re-runs tests" is interpreted as
+   the M5 backtest, not the pytest suite — a fresh run shows whether the new names change the
+   picture, and the runs-store makes before/after comparison trivial.)
+
+**Partial-history guard** (the IPG lesson): a newly onboarded symbol with short history must
+extend, never truncate, the shared picture. The M5 engine already computes per-symbol features
+on each symbol's native index before reindexing onto the master calendar, so short-history
+symbols are structurally safe there — but the onboarding pipeline must never let a
+short-history symbol shrink any *shared* calendar (verified by a dedicated test, not assumed).
+Symbols with less history than the scan's warm-up needs (300 trading days per algo-spec 01
+§2.2) are onboarded but flagged `insufficient_history` and excluded from backtest runs until
+they mature.
+
+Onboarding is idempotent: a symbol already onboarded (or already in the curated universe) is
+skipped, so repeat most-actives appearances don't re-trigger backfills or duplicate runs.
+
 ## Data flow & timing
 
-- Nightly job at ~17:00 ET on trading days. After close, Alpaca's screener endpoints still
-  show that day's actives/movers (they reset at the next open), so one job captures both the
-  scan and the screener snapshots.
+- Nightly job at **17:00 ET** on trading days (decided — one capture, after close). Alpaca's
+  screener endpoints still show that day's actives/movers at that hour (they reset at the next
+  open), so one job captures the scan, the screener snapshots, and onboarding.
+- **RTH only, by policy**: pre/post-market data is excluded from all scan math due to
+  liquidity concerns — daily bars are RTH-session aggregates, and onboarded minute data goes
+  through the existing `rth_only=True` loader convention. No pre/post-market-derived signal
+  enters the scan or the onboarding decisions.
 - **One-time initial backfill**: 5 years of daily bars for the full active asset list
   (~13–14M rows — smaller than the existing 44M-row minute warehouse), through the existing
   `ingest.py`/manifest machinery (batched multi-symbol requests, well within the 200 req/min
@@ -118,9 +168,11 @@ would have seen it, using only bars ≤ `as_of`. Known, accepted, **disclosed** 
 - **Screener snapshots cannot be reconstructed** — the recorder only accumulates forward.
 - Gate-1 heuristics use *current* asset metadata (name/exchange), not as-of metadata.
 
-Wiring the reconstructed universe into `run_m5_backtest` (and the minute-bar backfill for
-passing symbols that this implies) is a **follow-up milestone**, deliberately out of scope
-here.
+Wiring the **full reconstructed universe** into `run_m5_backtest` (and the bulk minute-bar
+backfill for every passing symbol that this implies) remains a **follow-up milestone**. The
+most-active onboarding pipeline above is the deliberate, narrow exception: it grows the
+backtest symbol set incrementally (a handful of symbols per day at most, usually zero once
+the regulars are cached) rather than all at once.
 
 ## Error handling
 
@@ -131,6 +183,9 @@ here.
   of silently writing a near-empty universe).
 - Screener capture failures do not block the scan (and vice versa); each part reports its own
   status.
+- Onboarding failures are isolated per symbol: one symbol's failed minute backfill doesn't
+  block the others, and the backtest re-run only launches for symbols whose backfill
+  completed; the failed symbol retries the next night (it isn't marked onboarded).
 - Snapshot writes are upserts — re-running a night is safe and convergent.
 
 ## Testing
@@ -146,22 +201,31 @@ Consistent with the repo's established norms (hermetic, no network/creds):
   (passed or exactly-attributed fail reasons); counts sum to the asset total.
 - **Orchestrator tests** with a mocked client: kill/resume idempotency, per-symbol failure
   isolation, coverage-floor refusal.
+- **Onboarding tests**: gate-filtering of raw most-actives (ETF/sub-$10 names rejected),
+  idempotency (an already-onboarded or curated symbol never re-triggers backfill or a
+  duplicate run), the partial-history guard (a short-history symbol never shrinks any shared
+  calendar; `insufficient_history` symbols excluded from launched runs), and
+  failed-backfill retry semantics.
 - **Postgres round-trip tests** via testcontainers (auto-skip without Docker), matching
   `test_store_repository.py`'s pattern.
 
 ## Out of scope (explicit)
 
 - Live intraday signal engine and paper execution (milestones #2 and #3).
-- Minute-bar backfill for scanned symbols; backtest integration of the expanded universe.
+- *Bulk* minute-bar backfill for the full scanned universe and backtest integration of the
+  full reconstructed universe (the most-active onboarding pipeline is the narrow,
+  in-scope exception).
 - Second-vendor reference data: shares float, earnings calendar (would populate the G8 stub),
   security type, halt history — all v2 enrichments of this scan.
-- Any change to the existing 130-symbol `config/universe.yaml` or current backtest behavior.
+- Any change to the existing 130-symbol `config/universe.yaml` or to default backtest
+  behavior (onboarded symbols enter only tagged onboarding runs; the curated-universe
+  baseline remains reproducible as-is).
 
 ## Open questions for the implementation plan
 
-- Whether broad daily bars share the existing `bars` table (with manifest scoping) or get
-  their own table to keep the curated-universe queries unchanged.
 - Exact IEX-recalibrated ADV/dollar-volume defaults (calibrate against cached data for the
   130 knowns, then sanity-check the resulting universe size lands near the spec's range).
-- Screener capture time within the job (immediately at 17:00 ET vs. a pre-close snapshot
-  later when milestone #2 exists).
+
+Resolved during spec review: broad daily bars get their **own table** (not the curated
+`bars` table); screener capture happens at **17:00 ET** in the nightly job; **RTH-only**
+policy throughout (no pre/post-market data in scan or onboarding math).
