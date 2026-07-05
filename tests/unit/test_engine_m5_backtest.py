@@ -987,7 +987,9 @@ def test_funnel_counts_the_trigger_bypass_path_end_to_end(monkeypatch):
 def test_funnel_counts_a_trigger_coincidence_killed_by_the_bias_two_bar_hold(monkeypatch):
     """Matrix thesis #3: a fresh trigger firing on the FIRST bullish bar fails
     bias_ok_long's 2-consecutive-bar hold. The funnel must record the
-    coincidence AND attribute the kill to the bias hold."""
+    coincidence AND attribute the kill to the bias hold. Pins bias_hold_bars=2
+    explicitly (the spec's original hold) since the config default was promoted
+    to 1 after the M7.5 robustness pass."""
     from rs_spy.bias.buckets import LONG_TRIGGER
 
     sym = "TRIG"
@@ -1016,7 +1018,7 @@ def test_funnel_counts_a_trigger_coincidence_killed_by_the_bias_two_bar_hold(mon
         spy_m1=pd.DataFrame(), spy_m5=pd.DataFrame(), spy_d1=pd.DataFrame(),
         qqq_m1=pd.DataFrame(), qqq_m5=pd.DataFrame(),
         sectors={sym: "Technology"},
-        config=BacktestConfigM5(),
+        config=BacktestConfigM5(bias_hold_bars=2),
     )
     f = result.funnel
     assert f["long_trigger_bars"] == 1

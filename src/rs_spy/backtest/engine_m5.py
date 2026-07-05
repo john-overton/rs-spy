@@ -71,7 +71,12 @@ class BacktestConfigM5:
     expected_hold_minutes: float = 120.0
     unfilled_cancel_bars: int = 2
     stop_atr_mult: float = 1.0
-    bias_hold_bars: int = 2  # consecutive family bars required before entries; 1 = current bar only
+    # Consecutive bias-family bars required before entries; 1 = current bar only.
+    # Promoted 2 -> 1 per the M7.5 robustness pass (docs/tuning/ledger.csv rob-*
+    # rows): strictly additive and improves PF/PnL at every window tested
+    # (w12/w18/w24); fresh-flip entries are the earliest entries on new trends.
+    # The spec's original 2-bar hold is bias_hold_bars=2.
+    bias_hold_bars: int = 1
     confirm_not_extended_atr_mult: float = 1.0
     # Dip-hold (Round 1 alert model): "strict" = current behavior (full gates
     # re-checked every bar); "d1_session" = QUALIFIED persists on D1 gates +
