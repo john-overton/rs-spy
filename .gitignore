@@ -16,3 +16,5 @@ data/*.duckdb.wal
 reports/
 
 .DS_Store
+
+SESSION_SUMMARY.md
