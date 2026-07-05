@@ -4,6 +4,9 @@ Gate evaluation is first-fail attributed in GATE_ORDER so the funnel
 partitions exactly: every evaluated symbol lands in exactly one of
 fail_<gate> or passed (tested by the funnel-partition test).
 """
+from dataclasses import dataclass
+
+import duckdb
 import pandas as pd
 
 from rs_spy.scan.config import ScanConfig
@@ -51,3 +54,87 @@ def apply_gates(
     ev["first_fail"] = first_fail
     funnel["passed"] = int(remaining.sum())
     return ev, funnel
+
+
+class ScanCoverageError(RuntimeError):
+    """Refusal to emit a snapshot: too few listing-eligible symbols have a bar
+    for as_of (holiday, half-day quirk, or upstream data outage)."""
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    as_of: pd.Timestamp
+    evaluated: pd.DataFrame
+    funnel: dict
+
+    @property
+    def passing(self) -> list[str]:
+        return sorted(self.evaluated.index[self.evaluated["passed"]])
+
+
+def compute_scan_metrics(
+    con: "duckdb.DuckDBPyConnection", as_of, adv_window: int = 20
+) -> pd.DataFrame:
+    """Per-symbol as-of metrics from cached daily bars.
+
+    Causality by construction: the WHERE clause admits only bars dated <= as_of
+    (daily bars are timestamped at midnight ET = 04:00/05:00 UTC, so CAST(ts AS
+    DATE) is the ET session date). The ADV window is the symbol's last
+    `adv_window` BARS, not calendar days (see task note).
+    """
+    as_of_date = pd.Timestamp(as_of).date()
+    df = con.execute(
+        """
+        WITH ranked AS (
+            SELECT symbol, ts, close, volume,
+                   row_number() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+            FROM bars
+            WHERE timespan = 'day' AND CAST(ts AS DATE) <= ?
+        )
+        SELECT symbol,
+               max(CASE WHEN rn = 1 THEN close END)            AS last_close,
+               max(CASE WHEN rn = 1 THEN CAST(ts AS DATE) END) AS last_bar_date,
+               avg(volume)         FILTER (WHERE rn <= ?)      AS adv_shares,
+               avg(close * volume) FILTER (WHERE rn <= ?)      AS adv_dollars,
+               count(*)            FILTER (WHERE rn <= ?)      AS n_bars
+        FROM ranked
+        GROUP BY symbol
+        """,
+        [as_of_date, adv_window, adv_window, adv_window],
+    ).df()
+    df["last_bar_date"] = pd.to_datetime(df["last_bar_date"])
+    df["n_bars"] = df["n_bars"].astype(int)
+    return df.set_index("symbol")
+
+
+def run_universe_scan(
+    con: "duckdb.DuckDBPyConnection",
+    assets: pd.DataFrame,
+    as_of,
+    config: ScanConfig | None = None,
+) -> ScanResult:
+    """The nightly scan and the point-in-time reconstruction -- one code path.
+
+    as_of=today against tonight's refreshed bars is the live scan; as_of=any
+    past trading date reconstructs the universe as it would have been (with
+    the disclosed survivorship limit: `assets` is always the CURRENT listing).
+    """
+    config = config or ScanConfig()
+    as_of = pd.Timestamp(as_of)
+    metrics = compute_scan_metrics(con, as_of, adv_window=config.adv_window)
+    evaluated, funnel = apply_gates(assets, metrics, config)
+
+    listing_eligible = evaluated["first_fail"].ne("listing")
+    if listing_eligible.any():
+        have_asof = float(
+            (evaluated.loc[listing_eligible, "last_bar_date"] == as_of.normalize()).mean()
+        )
+    else:
+        have_asof = 0.0
+    if have_asof < config.min_coverage_fraction:
+        raise ScanCoverageError(
+            f"only {have_asof:.0%} of listing-eligible symbols have a bar for "
+            f"{as_of.date()} (< {config.min_coverage_fraction:.0%}) -- "
+            "holiday, weekend, or data outage?"
+        )
+    return ScanResult(as_of=as_of, evaluated=evaluated, funnel=funnel)
