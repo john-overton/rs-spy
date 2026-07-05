@@ -102,3 +102,28 @@ def test_run_detail_shows_error_for_failed_runs(monkeypatch):
     at.run()
     assert not at.exception
     assert any("boom" in e.value for e in at.error)
+
+
+def _run_configure_page():
+    from rs_spy.ui.pages import configure_page
+    configure_page()
+
+
+def test_configure_page_submits_defaults_and_launches(monkeypatch):
+    launched = []
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(
+        data, "create_and_launch",
+        lambda conn, config, label: launched.append((config, label)) or
+        "33333333-3333-3333-3333-333333333333",
+    )
+    at = AppTest.from_function(_run_configure_page)
+    at.run()
+    assert not at.exception
+    at.text_input(key="run_label").set_value("my-run")
+    at.button(key="FormSubmitter:config_form-Run").click().run()
+    assert not at.exception
+    from rs_spy.backtest.engine_m5 import BacktestConfigM5
+    config, label = launched[0]
+    assert config == BacktestConfigM5()   # untouched form launches pure defaults
+    assert label == "my-run"

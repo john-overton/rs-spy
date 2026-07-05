@@ -3,6 +3,8 @@ import pandas as pd
 import streamlit as st
 
 import rs_spy.ui.data as data
+import rs_spy.ui.form as form
+from rs_spy.backtest.engine_m5 import BacktestConfigM5
 
 _STATUS_ICONS = {"queued": "⏸", "running": "▶", "succeeded": "✅", "failed": "❌"}
 
@@ -84,7 +86,46 @@ def render_run_detail(run_id) -> None:
 
 def configure_page() -> None:
     st.title("Configure & Run")
-    st.info("Coming in Task 4.")
+    conn = data.get_conn()
+
+    defaults = BacktestConfigM5()
+    clone_id = st.session_state.get("clone_run_id")
+    if clone_id:
+        defaults = data.config_of(conn, clone_id)
+        st.caption(f"Seeded from run {clone_id} (clone-and-tweak).")
+
+    label = st.text_input("Run label", key="run_label")
+    with st.form("config_form"):
+        values: dict = {}
+        main = [s for s in form.field_specs(defaults) if not s["advanced"]]
+        advanced = [s for s in form.field_specs(defaults) if s["advanced"]]
+        for spec in main:
+            values[spec["name"]] = _widget(spec)
+        with st.expander("Advanced (universe / gates / cohort overrides)"):
+            for spec in advanced:
+                values[spec["name"]] = _widget(spec)
+        submitted = st.form_submit_button("Run")
+
+    if submitted:
+        config = form.build_config(defaults, values)
+        run_id = data.create_and_launch(conn, config, label or None)
+        st.success(f"Launched run {run_id} — watch it on the Runs page.")
+
+
+def _widget(spec: dict):
+    name, kind, value = spec["name"], spec["kind"], spec["value"]
+    if kind == "bool":
+        return st.checkbox(name, value=value, key=f"cfg_{name}")
+    if kind == "int":
+        return st.number_input(name, value=int(value), step=1, key=f"cfg_{name}")
+    if kind == "float":
+        return st.number_input(name, value=float(value), format="%.4f", key=f"cfg_{name}")
+    if kind == "choice":
+        idx = spec["choices"].index(value) if value in spec["choices"] else 0
+        return st.selectbox(name, spec["choices"], index=idx, key=f"cfg_{name}")
+    if kind == "gates":
+        return st.multiselect(name, form.KNOWN_GATES, default=list(value), key=f"cfg_{name}")
+    return st.text_input(name, value=str(value), key=f"cfg_{name}")  # str / symbols
 
 
 def compare_page() -> None:
