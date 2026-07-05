@@ -18,11 +18,14 @@ app = typer.Typer()
 
 
 @app.command()
-def main(years: int = 5) -> None:
+def main(
+    years: int = 5,
+    universe_file: str = typer.Option("universe.yaml", help="universe YAML in config/"),
+) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     settings = get_settings()
-    universe = load_universe(settings.config_dir / "universe.yaml")
+    universe = load_universe(settings.config_dir / universe_file)
     client = AlpacaClient(settings)
     con = connect(settings.resolved_warehouse_path())
 
