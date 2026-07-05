@@ -1,0 +1,87 @@
+"""Most-active auto-onboarding: promote qualifying top-N most-active symbols
+into the backtest symbol set (5-year daily+minute backfill into the MAIN
+warehouse -- that's where backtests read).
+
+Guards:
+  * candidates are pre-filtered through the universe scan's gates (the raw
+    most-actives list is dominated by ETFs and sub-$10 movers);
+  * a symbol with fewer than MIN_HISTORY_DAYS daily bars (recent IPO) is
+    flagged insufficient_history -- onboarded, but excluded from launched
+    backtest runs until it matures (the M5 engine's SPY-derived master
+    calendar means it could never truncate the shared calendar anyway; see
+    the calendar-invariance test in tests/unit/test_engine_m5_backtest.py);
+  * zero fetched bars in either cadence = incomplete backfill; the caller
+    must not record the symbol, so the manifest retries it next night.
+"""
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+
+import duckdb
+
+from rs_spy.data.ingest import backfill
+
+# algo-spec 01 §2.2: >= 300 trading days of D1 history for SMAs/ATR/RRS warm-up
+MIN_HISTORY_DAYS = 300
+
+
+@dataclass(frozen=True)
+class OnboardingOutcome:
+    symbol: str
+    history_start: date | None
+    n_daily_bars: int
+    n_minute_bars: int
+    insufficient_history: bool
+
+
+def select_onboarding_candidates(
+    most_actives_payload: dict,
+    *,
+    passing: set[str],
+    curated: set[str],
+    onboarded: set[str],
+    top_n: int = 10,
+) -> list[str]:
+    """Top-N most-active symbols that pass the scan and aren't already known.
+    Order-preserving (most active first), deduplicated."""
+    entries = (most_actives_payload.get("most_actives") or [])[:top_n]
+    out: list[str] = []
+    for entry in entries:
+        sym = entry.get("symbol")
+        if not sym or sym in out:
+            continue
+        if sym in passing and sym not in curated and sym not in onboarded:
+            out.append(sym)
+    return out
+
+
+def onboard_symbol(
+    con: duckdb.DuckDBPyConnection,
+    client,
+    symbol: str,
+    end: datetime,
+    years: int = 5,
+) -> OnboardingOutcome:
+    """Backfill `symbol`'s daily (year chunks) and minute (month chunks) bars
+    into `con` (the MAIN warehouse) and report what landed. Resumable: a
+    partial failure leaves 'error' manifest units that retry next run."""
+    start = end - timedelta(days=365 * years + 5)
+    backfill(con, client, [symbol], "day", start, end, chunk_freq="year")
+    backfill(con, client, [symbol], "minute", start, end, chunk_freq="month")
+
+    first_day, n_daily = con.execute(
+        "SELECT CAST(min(ts) AS DATE), count(*) FROM bars "
+        "WHERE symbol = ? AND timespan = 'day'",
+        [symbol],
+    ).fetchone()
+    n_minute = con.execute(
+        "SELECT count(*) FROM bars WHERE symbol = ? AND timespan = 'minute'",
+        [symbol],
+    ).fetchone()[0]
+    n_daily, n_minute = int(n_daily), int(n_minute)
+    return OnboardingOutcome(
+        symbol=symbol,
+        history_start=first_day,
+        n_daily_bars=n_daily,
+        n_minute_bars=n_minute,
+        insufficient_history=n_daily < MIN_HISTORY_DAYS,
+    )
