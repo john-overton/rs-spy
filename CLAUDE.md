@@ -68,6 +68,13 @@ src/rs_spy/
 │   ├── engine.py          Full M5 bias engine (8 components, EMA smoothing)
 │   └── engine_d1.py       D1 walking-skeleton bias engine (simplified)
 │
+├── scan/                Nightly universe scan / discovery (algo-spec 01 §4, M9)
+│   ├── config.py          ScanConfig: iex/sip threshold presets, listing-heuristic allow/deny lists
+│   ├── engine.py          As-of metrics (causal SQL) + gate application + ScanCoverageError refusal
+│   ├── bars.py            Separate scan DuckDB warehouse + self-healing daily-bar refresh
+│   ├── onboarding.py      Most-active auto-onboarding: candidate selection + dual daily/minute backfill
+│   └── nightly.py         Orchestrator: screener capture -> refresh+scan -> record -> onboard -> re-run
+│
 ├── selection/           Stock Selection Engine / RS-RW scanner (algo-spec 04)
 │   ├── features.py / features_m5.py   Per-symbol D1 / M5 feature composition
 │   ├── gates.py           Hard gates (§2)
@@ -114,6 +121,7 @@ There are **no console_scripts** — everything is a standalone Typer script:
 | `python scripts/run_validation_studies.py` | Full M5 validation study suite (algo-spec 08 §3) |
 | `python scripts/run_tuning_sweep.py --window 18` | Tuning-campaign parameter sweep |
 | `python scripts/run_backtest_job.py --run-id <uuid>` | DB-native single run → Postgres (used by the UI/job runner) |
+| `python scripts/run_nightly_scan.py [--as-of DATE] [--no-onboard]` | Nightly universe scan + screener capture + most-active onboarding |
 
 ## Data & storage
 
@@ -122,9 +130,16 @@ There are **no console_scripts** — everything is a standalone Typer script:
   `ts` is true UTC (see the tz-bug comment in `data/warehouse.py`). Read via `data/loader.py`, written
   via `data/ingest.py`. **Backtests open it read-only** (`connect(path, read_only=True)`) so multiple
   runs can read concurrently; ingestion opens it read-write.
+- **Scan data**: a separate **DuckDB** file, `data/scan.duckdb` (~1GB, gitignored,
+  `Settings.resolved_scan_warehouse_path`) — same `bars`/`fetch_manifest` schema as the main
+  warehouse, but holds the broad ~14k-symbol daily-bar universe the nightly scan (M9) screens,
+  kept isolated so it never bleeds into curated-universe queries or contends with concurrent
+  backtest reads on `warehouse.duckdb`.
 - **Backtest results**: legacy CSV/JSON under `reports/<...>/`, plus the **Postgres runs-store** (Docker,
   `docker compose up -d`) holding `runs`/`trades`/`equity_curves` with status — the queryable home for
-  concurrent runs and the future UI. Connection via `Settings.database_url`.
+  concurrent runs and the future UI. Connection via `Settings.database_url`. Also holds 4 M9
+  scan tables — `scan_runs`/`universe_snapshots`/`screener_snapshots`/`onboarded_symbols` — via
+  `store/scan_repository.py`.
 - **Config**: `config/{universe.yaml, reference_overrides.yaml, backtest_default.yaml}`, loaded by
   `universe.py`. `.env` holds Alpaca creds + `database_url` overrides.
 

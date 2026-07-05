@@ -41,6 +41,22 @@ were never wrong, only date labels.
   `rrs_m5_window=18` produces 10 trades (vs. 3 at the spec default of 12) —
   see "M7: full validation study suite" section
   below for the complete results and interpretation. Test suite: 204 tests.
+- M7.5: tuning-campaign enablers + two experiment rounds — `rrs_m5_window`
+  promoted 12 -> 18, `bias_hold_bars=1` promoted after a robustness pass, the
+  full validation-study suite re-run on the promoted baseline (gate-ablation
+  monotonicity finally confirmed) — **complete**. See the M7.5 sections below.
+- **M9: nightly universe scan (discovery half of algo-spec 01 §4) — complete
+  except Step 4 (first live nightly run with onboarding), which needs a real
+  trading session and is pending the next session (Mon 2026-07-06).** Built a
+  self-contained `scan/` package (config/engine/bars/onboarding/nightly) that
+  answers "what should be in the tradeable universe tonight" from broad
+  Alpaca daily bars, one code path for both the live nightly scan and
+  point-in-time reconstruction. Real-data calibration (Task 9, as-of
+  2026-07-02, 14,021 assets): IEX thresholds promoted to 40k shares/$2M ADV
+  (1,450 passing, 128/128 curated symbols), measured universe-coverage
+  fraction 0.993 against the 0.80 refusal floor, and PIT spot-checks
+  quantifying survivorship decay (~1y back still solid, ~2y+ back refuses on
+  coverage). See "M9: nightly universe scan (discovery)" section below.
 
 ## TL;DR
 
@@ -1137,6 +1153,48 @@ rather than repeated here.
     side's regime exclusion); the ablation study was re-run against real data after the fix (see
     the M7 study-suite section below for the corrected result: disabling `bias` does unlock 1
     additional trade, matching `rrs`/`ha`/`sma`'s pattern).
+28. **Survivorship-driven PIT coverage decay in the M9 universe scan, now with measured
+    numbers** (see "M9: nightly universe scan" section's Task 9 Step 3): point-in-time
+    reconstruction uses the CURRENT Alpaca asset list, so a symbol delisted before `as_of`
+    is silently absent and a symbol listed after `as_of` has no bars to evaluate at all —
+    both erode measured coverage the further back `as_of` goes. Measured at the calibrated
+    thresholds: ~1y back (2025-07-02) still scans cleanly (970 passed, `fail_coverage` 885);
+    ~2y back (2024-07-02) refuses at 79% coverage; ~4y back (2022-07-01) refuses at 60%
+    coverage — all below the 0.80 floor. A deep-PIT study must consciously lower
+    `ScanConfig.min_coverage_fraction` and accept the disclosed survivorship bias rather than
+    treating a passing scan as a trustworthy historical universe arbitrarily far back.
+29. **Onboarded symbols all share one "UNKNOWN" sector bucket** (no sector/industry data
+    comes back from `AlpacaClient.fetch_assets`, unlike the curated universe's
+    `reference_overrides.yaml`-sourced sectors) — the selection engine's `max_per_sector`
+    diversification cap (default 2) will throttle onboarded names against each other on any
+    tradeable-list rebuild that mixes them with the curated universe, exactly as if they were
+    all one real sector. Not wired around; worth a real sector lookup if onboarding volume
+    ever makes this bind in practice.
+30. **`scan/nightly.py`'s maintenance pass (`_run_maintenance`) re-issues a backfill call
+    for every `insufficient_history` onboarded symbol on every single night**, unconditionally
+    (not just once maturation is plausible) — cheap per call (the manifest makes an
+    already-done unit a no-op) but unbounded in count as the onboarded set grows, and its
+    maturation granularity inherits the underlying manifest's calendar-YEAR staleness (a
+    symbol's daily-bar count can only advance when a fresh year-unit backfill actually runs),
+    so a symbol can sit at `insufficient_history` for up to a year longer than its true bar
+    count would justify. Not a correctness bug, just a coarser maturation clock than "the
+    symbol crossed 300 daily bars" might suggest.
+31. **Scan listing/liquidity heuristics carry the same disclosed substitutions as the spec**
+    (see `scan/__init__.py` and `scan/config.py`'s module docstrings, restated here for the
+    known-limitations list): no security-type field means ETF exclusion is a name/exchange
+    heuristic (case-by-case `symbol_denylist` patches for stragglers like QQQ); no float data
+    means the spec's float>=50M gate (01 §4.4) is substituted by the dollar-volume floor; and
+    the halt-history gate (01 §4.5) is dropped entirely (no historical halt feed available).
+    All three are pre-existing, deliberate v1 scope cuts, not new findings from Task 9's
+    calibration — restated here because the known-limitations list is where a future reader
+    checks first.
+32. **The `screener_snapshots` archive is forward-only starting 2026-07-06.** The first
+    capture attempt (2026-07-05, before the backdated-run guard existed) saved Sunday's
+    real-time screener payload mislabeled under scan_date 2026-07-02; those 3 rows were
+    deleted to keep the archive honest (`captured_at` preserved as evidence — see the M9
+    section's "data hygiene note"). No screener data exists for any date before 2026-07-06;
+    this is a real gap, not a bug, and won't backfill itself since the screener endpoints are
+    real-time-only by design.
 
 ## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
@@ -1491,3 +1549,145 @@ philosophy the system is built on. Open threads, in rough priority: shorts look 
 everywhere (consider shorts_enabled=False for the headline config, or a short-side
 recalibration); lever A5 (dip-quality parameterization) if Path B is pursued further;
 universe expansion as the remaining sample-size multiplier.
+
+## M9: nightly universe scan (discovery)
+
+New milestone, a different half of the system than M4-M7.5: instead of trading a fixed
+130-symbol curated universe, **discover what should be tradeable at all** (algo-spec 01 §4).
+Spec: `docs/superpowers/specs/2026-07-05-universe-scan-design.md`; plan:
+`docs/superpowers/plans/2026-07-05-m9-universe-scan.md`. Built as 9 tasks (8 implementer
+tasks each with its own fresh-subagent review, commits `2e6a7e1..22275f0`, plus a final
+whole-branch review + 4-commit fix round `47e6f56..c9b4534`; this doc's Task 9 closes the
+milestone with real-data calibration).
+
+**What was built** — a new `src/rs_spy/scan/` package:
+
+- `scan/config.py` — `ScanConfig` (feed presets `iex`/`sip`, price/coverage/ADV thresholds,
+  listing-heuristic allow/deny lists) + the gate order.
+- `scan/engine.py` — `compute_scan_metrics` (as-of, causal-by-construction SQL: only bars
+  dated `<= as_of` ever enter the window) + `apply_gates` (first-fail attribution over
+  `GATE_ORDER = (listing, coverage, price, adv_shares, adv_dollars)`, so the funnel
+  partitions every evaluated symbol exactly once) + `run_universe_scan`, the one code path
+  used for both the live nightly scan (`as_of=today`) and point-in-time reconstruction
+  (`as_of=`any cached date) — with a `ScanCoverageError` refusal when too few
+  listing-eligible symbols have a bar for `as_of` (holiday/weekend/outage), rather than
+  silently emitting a biased snapshot.
+- `scan/bars.py` — a **separate DuckDB file** (`data/scan.duckdb`, `Settings.
+  resolved_scan_warehouse_path`, same `bars`/`fetch_manifest` schema as the main warehouse,
+  `warehouse.connect()` reused as-is) so ~14k-symbol broad-scan data never bleeds into
+  curated-universe queries and the scan's nightly read-write connection never contends with
+  concurrent read-only backtests on `warehouse.duckdb`. `refresh_daily_bars` combines the
+  manifest's idempotent historical backfill with an unconditional, self-healing tail
+  re-fetch (a calendar-year manifest unit is marked done at first fetch and goes stale as
+  the current year grows; the tail start self-heals to the newest stored bar so a run after
+  any outage catches up in one pass).
+- `scan/onboarding.py` — most-active auto-onboarding: `select_onboarding_candidates` caps
+  on the RAW top-N most-actives ranking *before* gate filtering (per spec — a night where
+  the raw top-N is all ETFs/sub-$10 movers correctly yields zero candidates, not a
+  filter-then-cap workaround), then `onboard_symbol` does a dual (daily year-chunk + minute
+  month-chunk) backfill into the MAIN warehouse (that's where backtests read). A symbol
+  with `< MIN_HISTORY_DAYS=300` daily bars is flagged `insufficient_history` (onboarded but
+  excluded from launched runs); zero fetched bars in either cadence means the caller must
+  not record the symbol at all (manifest retries it next night).
+- `scan/nightly.py` — `run_nightly` orchestrates screener capture -> refresh+scan ->
+  record -> onboard (new candidates + a maintenance pass) -> re-run, with every stage
+  isolated so one symbol's failed onboarding or a failed screener capture never blocks the
+  rest of the night (failures land in `NightlyReport.errors`, not raised) — except a scan
+  `ScanCoverageError`, which does propagate, since no snapshot should exist for a refused
+  night. Cron line (documented, not auto-installed; this machine runs America/Chicago):
+  `0 16 * * 1-5  cd .../rs-spy && .venv/bin/python scripts/run_nightly_scan.py` (16:00 CT
+  == 17:00 ET, RTH-only policy per spec).
+- `data/alpaca_client.py` extensions: `fetch_assets` (all active US-equity assets,
+  deduplicated by symbol; Alpaca has no security-type/float field, hence the listing
+  heuristics) and `fetch_screener_snapshots` (most-actives by volume/trades + market
+  movers — real-time-only endpoints, no `as_of` parameter, hence the nightly recorder).
+  Both go through the existing `_request_with_retry` backoff policy.
+- Postgres: 4 new tables (`scan_runs`, `universe_snapshots`, `screener_snapshots`,
+  `onboarded_symbols`) + `store/scan_repository.py` (plain-SQL, mirrors `store/
+  repository.py`'s style; `save_scan` deletes+`COPY`s each date's snapshot rows inside one
+  transaction so a re-run of the same night converges rather than duplicating).
+- `BacktestConfigM5.extra_symbols` (a new tuple field) + a small merge in `jobs/runner.py`
+  (curated symbols plus any `extra_symbols` not already known) let a single tagged backtest
+  run span curated + onboarded symbols without touching `universe.yaml`. A dedicated
+  calendar-invariance test (`tests/unit/test_engine_m5_backtest.py`) locks down that the
+  M5 engine's SPY-derived master calendar can never be truncated by a newly onboarded
+  symbol's shorter history — the reason `insufficient_history` symbols are safely
+  includable once they mature rather than needing to be filtered out of the run entirely.
+- CLI: `scripts/run_nightly_scan.py` (`--as-of`, `--feed`, `--top`, `--no-onboard`,
+  `--no-launch`).
+
+**Final whole-branch review + fix round** (4 commits): (1) a **backdated-run guard** —
+`fetch_screener_snapshots` has no `as_of` parameter (always "right now"), so saving its
+payload under a past `scan_date` would silently overwrite that date's genuine archived
+snapshot and poison onboarding with a past passing-set crossed with today's most-actives;
+a backdated run (`as_of` != today ET) now skips screener-capture and onboarding entirely
+and only re-runs the fully-re-runnable scan/PIT half; (2) **retry + screener-first
+ordering** — `fetch_assets`/`fetch_screener_snapshots` now go through the shared retry
+policy, and screener capture was moved to run *before* the 15-45 min refresh+scan so a
+slow or failed refresh can never cost the day's irreplaceable, uncapturable-later screener
+snapshot; (3) an **onboarding maintenance pass** (`nightly.py::_run_maintenance`) added to
+repair two otherwise one-way ratchets: an `insufficient_history` symbol (e.g. a recent
+IPO) is now re-evaluated nightly so it eventually matures past `MIN_HISTORY_DAYS` instead
+of being excluded forever, and a partially-failed minute backfill (some month manifest
+units landed `error`) is now retried via `data/manifest.py::symbols_with_error_units`
+instead of leaving a permanent hole — both reuse `onboard_symbol`, which was already
+resumable; (4) a minor batch (parquet-write failure isolated from the Postgres save that
+already committed, most-actives dedup, docstring tightening).
+
+### Task 9: real-data calibration (as-of 2026-07-02 — last trading day; Fri 07-03 was the
+observed July-4th holiday)
+
+**Step 1 — initial backfill + first scan.** The one-time broad daily backfill covered
+**14,021 active US equities** in ~35 min (rate-limited); `scan.duckdb` landed at ≈0.97 GB.
+The first scan, run before calibration at the plan's placeholder 30k-shares/$750k-dollars
+IEX thresholds, passed **1,823/14,021**. Funnel: `fail_listing` 7,030, `fail_coverage` 101,
+`fail_price` 2,682, `fail_adv_shares` 2,293, `fail_adv_dollars` 92. A convergence re-run
+afterward completed in **32 seconds** (manifest no-ops + self-healing tail only) and landed
+on **1,450/14,021** — matching the post-calibration count exactly, since the re-run picked
+up the promoted thresholds. That re-run also exercised the backdated-run guard live end to
+end: its report carried `"backdated run: screener+onboarding skipped (screener endpoints
+are real-time-only)"`.
+
+**Step 2 — IEX threshold calibration.** Sweeping shares/dollars against the real warehouse:
+20k/500k -> 2,075; 30k/750k -> 1,823; 50k/1.25M -> 1,462; 75k/2M -> 1,121; 100k/3M -> 862.
+50k/1.25M drops **EQIX** — a curated symbol (`last_close` ≈ $1,002, IEX `adv_shares` ≈ 44.4k
+but `adv_dollars` ≈ $47.4M/day) — because a shares floor penalizes high-priced liquid names
+regardless of their real dollar turnover; this is the same rationale behind substituting
+the dollar-volume floor for the spec's unavailable float gate. A refined grid found
+**40k shares / $2M dollars -> 1,450 passing with all 128/128 curated symbols passing**,
+comfortably inside the spec's 800-1,500 sanity band. **Promoted**: `IEX_MIN_ADV_SHARES=
+40,000`, `IEX_MIN_ADV_DOLLARS=2,000,000` (`scan/config.py`, this commit). Measured
+universe-coverage fraction among listing-eligible symbols at 2026-07-02: **0.993** against
+the 0.80 refusal floor — a comfortable safety margin for live nights, resolving the open
+concern (item below, previously open) that the 0.80 floor might be unachievable on IEX.
+
+**Step 3 — point-in-time spot-checks (calibrated config).** 2025-07-02 (~1y back): 970
+passed, `fail_coverage` 885 (survivorship shrinkage already visible). 2024-07-02 (~2y
+back): **refused** — `ScanCoverageError`, only 79% coverage. 2022-07-01 (~4y back):
+**refused** — 60% coverage. A deliberate weekend check, 2026-07-05 (Sunday): **refused** —
+0% coverage, exactly as designed. Interpretation: PIT reconstruction with the
+current-only asset list is trustworthy roughly 1 year back; beyond that, survivorship
+(symbols listed since `as_of` have no bars at that date under the current-asset-list
+limitation) drives measured coverage below the 0.80 floor and the scan refuses rather than
+emitting a biased snapshot. A deep-PIT study must consciously lower `min_coverage_fraction`
+and accept the disclosed survivorship bias — this was the spec's disclosed v1 limit; it now
+has measured decay numbers behind it.
+
+**Step 4 — first live nightly run with onboarding: NOT RUN, impossible on a Sunday.** A
+live `as_of=today` run refuses on the weekend coverage floor, and a backdated run correctly
+skips screener capture + onboarding by design (see the backdated-run guard above) — there
+is no valid way to exercise the live onboarding path on 2026-07-05. This is the one
+remaining item of Task 9's brief, deferred to the next trading session (Mon 2026-07-06,
+17:00 ET / 16:00 CT cron). Expected on that run, per the design: most of the top-10
+most-actives get gate-filtered (ETFs/sub-$10 names dominate raw most-actives lists), a
+zero-candidate night is a valid outcome (`onboarded=[]`, no run launched), a qualifying
+candidate's dual backfill takes ~2-5 min each, and a tagged `onboarding-<date>` run appears
+in the runs-store (`status=queued->running->succeeded`, visible via `list_runs`).
+
+**Data hygiene note.** The first (pre-fix) run on 2026-07-05 captured Sunday's screener
+payload keyed under scan_date 2026-07-02 (a real-time-only screener call, saved under the
+wrong date before the backdated-run guard existed) — those 3 `screener_snapshots` rows were
+deleted to keep the archive honest (`captured_at` was preserved as evidence of the
+incident). The backdated-run guard (fix-round commit `47e6f56`) now prevents recurrence.
+The screener archive therefore starts genuinely empty; the first real capture will be
+2026-07-06.

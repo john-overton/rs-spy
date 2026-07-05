@@ -3,9 +3,13 @@
 Feed presets: `sip` uses the spec's real thresholds (1M shares / $25M); `iex`
 uses recalibrated proxies for the free tier's IEX-only volume (~2-3% of
 consolidated -- same evidence base as BacktestConfigM5.min_adv_shares=50k).
-The IEX defaults below are pre-calibration estimates; Task 9 calibrates them
-against real cached data and updates them (with the measured numbers in a
-comment) if the resulting universe size is far outside the spec's 800-1,500.
+The IEX defaults below were CALIBRATED against real cached data (M9 Task 9,
+as-of 2026-07-02, 14,021 assets): the shares floor is kept below high-priced
+liquid names' share counts (EQIX trades ~44k IEX shares but ~$47M/day -- a
+50k shares floor wrongly drops it), and the dollar floor carries the
+discrimination. Measured passing counts: 30k/$750k -> 1,823; 50k/$1.25M ->
+1,462 (drops EQIX); 40k/$2M -> 1,450 with all 128 curated symbols passing --
+inside the spec's 800-1,500 sanity band, hence the defaults below.
 
 Heuristic listing filters (Alpaca has no security-type field):
   * exchange allowlist NYSE/NASDAQ/AMEX -- ARCA/BATS listings are
@@ -22,8 +26,8 @@ historical halt feed). Both disclosed in the spec and scan/__init__.py.
 """
 from dataclasses import dataclass
 
-IEX_MIN_ADV_SHARES = 30_000.0
-IEX_MIN_ADV_DOLLARS = 750_000.0
+IEX_MIN_ADV_SHARES = 40_000.0  # calibrated 2026-07-02: 1,450 pass, 128/128 curated (see docstring)
+IEX_MIN_ADV_DOLLARS = 2_000_000.0
 SIP_MIN_ADV_SHARES = 1_000_000.0
 SIP_MIN_ADV_DOLLARS = 25_000_000.0
 
