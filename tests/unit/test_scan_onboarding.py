@@ -39,6 +39,21 @@ def test_candidates_respect_top_n():
     assert out == [f"S{i}" for i in range(10)]
 
 
+def test_cap_applies_to_raw_ranking_before_gate_filtering():
+    # Spec: "Most-active auto-onboarding" (2026-07-05-universe-scan-design.md) --
+    # the candidate pool is the raw top-N; gates filter WITHIN it, so a top-10
+    # of all-failing symbols yields zero candidates even if passers rank 11-15.
+    payload = _payload([f"ETF{i}" for i in range(10)] + [f"OK{i}" for i in range(5)])
+    out = select_onboarding_candidates(
+        payload,
+        passing={f"OK{i}" for i in range(5)},
+        curated=set(),
+        onboarded=set(),
+        top_n=10,
+    )
+    assert out == []
+
+
 def test_empty_or_missing_payload_yields_no_candidates():
     assert select_onboarding_candidates({}, passing={"A"}, curated=set(), onboarded=set()) == []
 

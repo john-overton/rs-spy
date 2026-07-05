@@ -42,7 +42,16 @@ def select_onboarding_candidates(
     top_n: int = 10,
 ) -> list[str]:
     """Top-N most-active symbols that pass the scan and aren't already known.
-    Order-preserving (most active first), deduplicated."""
+    Order-preserving (most active first), deduplicated.
+
+    The `top_n` cap applies to the RAW most-actives ranking BEFORE gate
+    filtering, per the design spec (docs/superpowers/specs/
+    2026-07-05-universe-scan-design.md, "Most-active auto-onboarding": the
+    candidate pool is the day's raw top-N; gates filter within it). We onboard
+    only names genuinely in the day's top-N activity, so a night where the raw
+    top-N is all ETFs/sub-$10 movers correctly yields zero candidates. Do not
+    "fix" this to filter-then-cap.
+    """
     entries = (most_actives_payload.get("most_actives") or [])[:top_n]
     out: list[str] = []
     for entry in entries:
@@ -63,7 +72,13 @@ def onboard_symbol(
 ) -> OnboardingOutcome:
     """Backfill `symbol`'s daily (year chunks) and minute (month chunks) bars
     into `con` (the MAIN warehouse) and report what landed. Resumable: a
-    partial failure leaves 'error' manifest units that retry next run."""
+    partial failure leaves 'error' manifest units that retry next run.
+
+    Interpreting the outcome: callers must check
+    `n_daily_bars == 0 or n_minute_bars == 0` (incomplete backfill -- do NOT
+    record the symbol as onboarded) BEFORE interpreting `insufficient_history`;
+    the flag is True both for a failed daily backfill (zero bars) and for a
+    short-but-real history (recent IPO)."""
     start = end - timedelta(days=365 * years + 5)
     backfill(con, client, [symbol], "day", start, end, chunk_freq="year")
     backfill(con, client, [symbol], "minute", start, end, chunk_freq="month")
