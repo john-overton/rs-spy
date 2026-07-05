@@ -53,6 +53,9 @@ def pg_conn(pg_url):
     init_schema(conn)
     yield conn
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE runs, trades, equity_curves RESTART IDENTITY CASCADE")
+        cur.execute(
+            "TRUNCATE runs, trades, equity_curves, scan_runs, universe_snapshots, "
+            "screener_snapshots, onboarded_symbols RESTART IDENTITY CASCADE"
+        )
     conn.commit()
     conn.close()

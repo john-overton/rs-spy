@@ -11,6 +11,8 @@ Storage decisions:
     parquet-compressed BYTEA blob. The only access pattern is "whole curve for
     run X"; a normalised per-point table would pay millions of rows for zero
     query benefit.
+  * M9 adds scan_runs / universe_snapshots / screener_snapshots / onboarded_symbols
+    -- the discovery half's records; same idempotent-DDL approach.
 """
 import psycopg
 
@@ -66,6 +68,46 @@ CREATE TABLE IF NOT EXISTS equity_curves (
     n_points     INTEGER NOT NULL,
     format       TEXT NOT NULL DEFAULT 'parquet',
     data         BYTEA NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+    scan_date    DATE PRIMARY KEY,
+    funnel       JSONB NOT NULL,
+    captured_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS universe_snapshots (
+    scan_date    DATE NOT NULL,
+    symbol       TEXT NOT NULL,
+    name         TEXT,
+    exchange     TEXT,
+    optionable   BOOLEAN,
+    last_close   DOUBLE PRECISION,
+    adv_shares   DOUBLE PRECISION,
+    adv_dollars  DOUBLE PRECISION,
+    n_bars       INTEGER,
+    passed       BOOLEAN NOT NULL,
+    first_fail   TEXT,
+    PRIMARY KEY (scan_date, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_universe_snapshots_passed
+    ON universe_snapshots (scan_date) WHERE passed;
+
+CREATE TABLE IF NOT EXISTS screener_snapshots (
+    snapshot_date DATE NOT NULL,
+    endpoint      TEXT NOT NULL,
+    payload       JSONB NOT NULL,
+    captured_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (snapshot_date, endpoint)
+);
+
+CREATE TABLE IF NOT EXISTS onboarded_symbols (
+    symbol               TEXT PRIMARY KEY,
+    onboarded_date       DATE NOT NULL,
+    source               TEXT NOT NULL,
+    history_start        DATE,
+    n_daily_bars         INTEGER,
+    insufficient_history BOOLEAN NOT NULL DEFAULT false
 );
 """
 

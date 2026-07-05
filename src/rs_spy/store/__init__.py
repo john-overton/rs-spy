@@ -5,6 +5,8 @@ and a UI can list/compare/fire runs.
 Market-data bars stay in DuckDB (rs_spy.data.warehouse); this package holds only
 results. Plain-SQL psycopg3 repository, mirroring the warehouse module's style
 (raw SQL, idempotent schema) -- no ORM, no migration tool. See docker-compose.yml.
+
+M9: scan_repository holds the discovery-half records.
 """
 from rs_spy.store.connection import connect_pg
 from rs_spy.store.repository import (
