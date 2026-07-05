@@ -1588,7 +1588,13 @@ milestone with real-data calibration).
   month-chunk) backfill into the MAIN warehouse (that's where backtests read). A symbol
   with `< MIN_HISTORY_DAYS=300` daily bars is flagged `insufficient_history` (onboarded but
   excluded from launched runs); zero fetched bars in either cadence means the caller must
-  not record the symbol at all (manifest retries it next night).
+  not record the symbol at all (manifest retries it next night). `onboard_symbol` also
+  tail-heals both cadences from the newest stored bar on every call (same pattern as
+  `scan/bars.py`'s tail stage): the year/month manifest unit spanning `end` is marked `ok`
+  at whatever partial boundary the first onboarding call used and `pending_symbols` never
+  revisits an `ok` unit, so without this a symbol onboarded mid-year/mid-month would
+  permanently miss bars for the rest of that period instead of healing on the next
+  maintenance visit.
 - `scan/nightly.py` — `run_nightly` orchestrates screener capture -> refresh+scan ->
   record -> onboard (new candidates + a maintenance pass) -> re-run, with every stage
   isolated so one symbol's failed onboarding or a failed screener capture never blocks the
@@ -1613,6 +1619,9 @@ milestone with real-data calibration).
   M5 engine's SPY-derived master calendar can never be truncated by a newly onboarded
   symbol's shorter history — the reason `insufficient_history` symbols are safely
   includable once they mature rather than needing to be filtered out of the run entirely.
+  Maturation itself never triggers a tagged backtest run, though: a matured symbol only
+  joins `extra_symbols` on the next night that already produces new onboarding candidates
+  (deliberate — nightly runs aren't spammed solely to pick up a maturity-status flip).
 - CLI: `scripts/run_nightly_scan.py` (`--as-of`, `--feed`, `--top`, `--no-onboard`,
   `--no-launch`).
 

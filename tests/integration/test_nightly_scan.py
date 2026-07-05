@@ -13,6 +13,8 @@ from rs_spy.scan.config import ScanConfig
 from rs_spy.scan.nightly import run_nightly
 from rs_spy.store import scan_repository as scan_repo
 
+pytestmark = pytest.mark.integration
+
 CFG = ScanConfig()
 AS_OF = pd.Timestamp("2026-07-02")  # a Thursday
 END = datetime(2026, 7, 3, tzinfo=timezone.utc)

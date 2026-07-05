@@ -31,8 +31,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 import duckdb
+import pandas as pd
 
-from rs_spy.data.ingest import backfill
+from rs_spy.data.ingest import _write_bars, backfill
 
 # algo-spec 01 §2.2: >= 300 trading days of D1 history for SMAs/ATR/RRS warm-up
 MIN_HISTORY_DAYS = 300
@@ -96,6 +97,24 @@ def onboard_symbol(
     start = end - timedelta(days=365 * years + 5)
     backfill(con, client, [symbol], "day", start, end, chunk_freq="year")
     backfill(con, client, [symbol], "minute", start, end, chunk_freq="month")
+
+    # `backfill`'s manifest units are calendar year (daily) / month (minute),
+    # marked 'ok' as soon as a fetch for that unit succeeds -- even when `end`
+    # fell mid-period. `pending_symbols` never revisits an 'ok' unit, so a
+    # symbol onboarded mid-year/mid-month would otherwise permanently miss
+    # bars for the rest of that period on later maintenance runs. Tail-heal
+    # both cadences from the newest stored bar each visit (mirrors
+    # scan/bars.py::refresh_daily_bars's tail stage); a cheap no-op when
+    # there's nothing new to fetch.
+    for timespan in ("day", "minute"):
+        newest = con.execute(
+            "SELECT max(ts) FROM bars WHERE symbol = ? AND timespan = ?",
+            [symbol, timespan],
+        ).fetchone()[0]
+        if newest is not None:
+            newest_dt = pd.Timestamp(newest).tz_localize("UTC").to_pydatetime()
+            if newest_dt < end:
+                _write_bars(con, client.fetch_bars([symbol], timespan, newest_dt, end))
 
     first_day, n_daily = con.execute(
         "SELECT CAST(min(ts) AS DATE), count(*) FROM bars "

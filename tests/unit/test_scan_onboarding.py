@@ -130,6 +130,38 @@ class FlakyOneMonthClient(FakeClient):
         return super().fetch_bars(symbols, timespan, start, end)
 
 
+def test_onboard_symbol_self_heals_boundary_hole_within_same_manifest_unit():
+    """Fix B: `backfill` marks the current year (daily) / month (minute)
+    manifest unit 'ok' at whatever `end` the first onboarding call used, and
+    `pending_symbols` never revisits an 'ok' unit. So a symbol onboarded
+    mid-year/mid-month would otherwise never pick up the rest of that
+    period's bars on a later maintenance run, even once the client has more
+    data -- a permanent boundary hole. The tail re-fetch in `onboard_symbol`
+    (mirroring scan/bars.py::refresh_daily_bars) heals it every call."""
+    con = connect_scan(Path(":memory:"))
+    client = FakeClient(history_days=900)
+
+    t = END  # 2026-07-02: within calendar year 2026 / month 2026-07
+    out1 = onboard_symbol(con, client, "HOOD", t, years=1)
+
+    t2 = t + timedelta(days=10)  # 2026-07-12: SAME year/month manifest units
+    out2 = onboard_symbol(con, client, "HOOD", t2, years=1)
+
+    newest_day = con.execute(
+        "SELECT max(ts) FROM bars WHERE symbol='HOOD' AND timespan='day'"
+    ).fetchone()[0]
+    newest_minute = con.execute(
+        "SELECT max(ts) FROM bars WHERE symbol='HOOD' AND timespan='minute'"
+    ).fetchone()[0]
+
+    # Without the fix, both stay pinned at ~t (the year/month units were
+    # already 'ok'); with the fix they advance to ~t2.
+    t2_ts = pd.Timestamp(t2)
+    assert pd.Timestamp(newest_day, tz="UTC") >= t2_ts - pd.Timedelta(days=2)
+    assert pd.Timestamp(newest_minute, tz="UTC") >= t2_ts - pd.Timedelta(days=2)
+    assert out2.n_daily_bars > out1.n_daily_bars  # healed count reflected in the outcome
+
+
 def test_symbols_with_error_units_detects_and_resume_run_repairs_partial_hole():
     """T6 resume-path test: a partially-failed minute backfill (n_minute_bars
     > 0 overall, but one month unit landed 'error') leaves a permanent hole

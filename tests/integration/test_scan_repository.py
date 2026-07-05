@@ -2,8 +2,11 @@
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from rs_spy.store import scan_repository as scan_repo
+
+pytestmark = pytest.mark.integration
 
 SCAN_DATE = date(2026, 7, 2)
 
