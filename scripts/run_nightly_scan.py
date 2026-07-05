@@ -10,7 +10,11 @@ backtest over curated + onboarded symbols.
 
 Needs .env (Alpaca keys) and Postgres up (docker compose up -d). Scheduling:
 see rs_spy/scan/nightly.py's docstring (cron at 16:00 America/Chicago ==
-17:00 ET, weekdays).
+17:00 ET, weekdays); the installed crontab entry runs the absolute-path
+wrapper scripts/nightly_scan_cron.sh, logging to logs/nightly_scan.log.
+Note: macOS cron skips runs while the machine sleeps (launchd would catch
+up on wake) -- a missed night self-heals via the manifest + tail refresh,
+but that day's screener snapshot is lost (live-only endpoints).
 """
 import logging
 
