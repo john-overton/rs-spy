@@ -1,4 +1,6 @@
 """Hermetic page tests: streamlit AppTest + monkeypatched rs_spy.ui.data."""
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -198,3 +200,36 @@ def test_compare_page_skips_zero_start_equity(monkeypatch):
     assert len(at.dataframe) >= 1   # metrics table renders; zero-start curve skipped
     # no chart rendered: rebasing a zero-start curve would produce inf/nan
     assert len(at.get("vega_lite_chart")) == 0
+
+
+def _run_scan_page():
+    from rs_spy.ui.pages import scan_page
+    scan_page()
+
+
+def test_scan_page_renders_history_funnel_and_snapshot(monkeypatch):
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "scan_dates", lambda conn: [date(2026, 7, 2)])
+    monkeypatch.setattr(data, "passing_history", lambda conn: pd.DataFrame(
+        {"scan_date": [date(2026, 7, 2)], "n_passed": [1450]}))
+    monkeypatch.setattr(data, "scan_funnel", lambda conn, d: {
+        "assets": 14021, "passed": 1450, "fail_listing": 7030})
+    monkeypatch.setattr(data, "universe_snapshot", lambda conn, d: pd.DataFrame(
+        {"symbol": ["AAPL", "PENNY"], "passed": [True, False],
+         "first_fail": [None, "price"]}))
+    monkeypatch.setattr(data, "onboarded_df", lambda conn: pd.DataFrame(
+        {"symbol": ["HOOD"], "insufficient_history": [False]}))
+    at = AppTest.from_function(_run_scan_page)
+    at.run()
+    assert not at.exception
+    assert len(at.metric) >= 2       # assets + passed cards
+    assert len(at.dataframe) >= 2    # snapshot browser + onboarded table
+
+
+def test_scan_page_with_no_scans_yet(monkeypatch):
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "scan_dates", lambda conn: [])
+    at = AppTest.from_function(_run_scan_page)
+    at.run()
+    assert not at.exception
+    assert at.info                    # friendly empty state, no crash

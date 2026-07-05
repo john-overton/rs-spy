@@ -164,7 +164,41 @@ def compare_page() -> None:
 
 def scan_page() -> None:
     st.title("Scan & discovery")
-    st.info("Coming in Task 6.")
+    conn = data.get_conn()
+    dates = data.scan_dates(conn)
+    if not dates:
+        st.info("No scans recorded yet — run scripts/run_nightly_scan.py.")
+        return
+
+    history = data.passing_history(conn)
+    if not history.empty:
+        st.line_chart(history.set_index("scan_date")["n_passed"])
+
+    chosen = st.selectbox("Scan date", dates, key="scan_date")
+    funnel = data.scan_funnel(conn, chosen) or {}
+    if funnel:
+        left, right = st.columns(2)
+        left.metric("Assets evaluated", funnel.get("assets"))
+        right.metric("Passed", funnel.get("passed"))
+        st.dataframe(
+            pd.DataFrame(sorted(funnel.items()), columns=["gate", "count"]),
+            hide_index=True,
+        )
+
+    snapshot = data.universe_snapshot(conn, chosen)
+    if not snapshot.empty:
+        fails = ["(all)"] + sorted(snapshot["first_fail"].dropna().unique().tolist())
+        pick = st.selectbox("Filter by first failing gate", fails, key="fail_filter")
+        shown = snapshot if pick == "(all)" else snapshot[snapshot["first_fail"] == pick]
+        st.caption(f"{len(shown)} symbols")
+        st.dataframe(shown, hide_index=True)
+
+    st.subheader("Onboarded symbols")
+    onboarded = data.onboarded_df(conn)
+    if onboarded.empty:
+        st.caption("None yet.")
+    else:
+        st.dataframe(onboarded, hide_index=True)
 
 
 def campaigns_page() -> None:
