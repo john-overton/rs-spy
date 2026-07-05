@@ -80,6 +80,14 @@ def launched(monkeypatch):
 
 
 @pytest.fixture
+def frozen_today(monkeypatch):
+    """Pin nightly._today_et() to AS_OF so tests that want a "today" (not
+    backdated) run don't flake as the real wall-clock date moves on."""
+    monkeypatch.setattr("rs_spy.scan.nightly._today_et", lambda: AS_OF)
+    return AS_OF
+
+
+@pytest.fixture
 def curated(monkeypatch):
     """Nightly loads universe.yaml only for the curated-symbol set; fake it."""
     from rs_spy.universe import BenchmarkSpec, SymbolSpec, Universe
@@ -93,7 +101,7 @@ def curated(monkeypatch):
     return fake
 
 
-def test_happy_path_scan_screener_onboard_launch(tmp_path, pg_conn, launched, curated):
+def test_happy_path_scan_screener_onboard_launch(tmp_path, pg_conn, launched, curated, frozen_today):
     report = run_nightly(_settings(tmp_path), FakeClient(), pg_conn,
                          as_of=AS_OF, config=CFG, launch=True)
     assert report.scan_saved and report.screener_saved
@@ -114,7 +122,7 @@ def test_happy_path_scan_screener_onboard_launch(tmp_path, pg_conn, launched, cu
     assert run["config"]["extra_symbols"] == ["HOOD"]
 
 
-def test_screener_failure_does_not_block_the_scan(tmp_path, pg_conn, launched, curated):
+def test_screener_failure_does_not_block_the_scan(tmp_path, pg_conn, launched, curated, frozen_today):
     client = FakeClient()
     client.fetch_screener_snapshots = lambda **kw: (_ for _ in ()).throw(ConnectionError("down"))
     report = run_nightly(_settings(tmp_path), client, pg_conn, as_of=AS_OF, config=CFG)
@@ -124,10 +132,44 @@ def test_screener_failure_does_not_block_the_scan(tmp_path, pg_conn, launched, c
     assert report.onboarded == []  # no payload -> no onboarding, but no crash
 
 
-def test_second_night_is_idempotent_no_reonboard_no_new_run(tmp_path, pg_conn, launched, curated):
+def test_second_night_is_idempotent_no_reonboard_no_new_run(
+    tmp_path, pg_conn, launched, curated, frozen_today
+):
     settings = _settings(tmp_path)
     run_nightly(settings, FakeClient(), pg_conn, as_of=AS_OF, config=CFG)
     report2 = run_nightly(settings, FakeClient(), pg_conn, as_of=AS_OF, config=CFG)
     assert report2.onboarded == []          # HOOD already onboarded -> skipped
     assert len(launched) == 1               # no second run launched
     assert len(scan_repo.list_onboarded(pg_conn)) == 1
+
+
+def test_backdated_run_skips_screener_and_onboarding(tmp_path, pg_conn, launched, curated, frozen_today):
+    """A --as-of <past date> re-run must never touch the live-only screener
+    capture or onboarding: the screener has no as-of parameter, so saving its
+    live payload under a past scan_date would overwrite that date's genuine
+    archived snapshot (last-write-wins) and poison onboarding with a past
+    passing-set crossed with today's most-actives."""
+    client = FakeClient()
+    calls = []
+    client.fetch_screener_snapshots = lambda **kw: calls.append("screener") or (_ for _ in ()).throw(
+        AssertionError("screener must not be called for a backdated run")
+    )
+    yesterday = AS_OF - pd.Timedelta(days=1)
+    report = run_nightly(_settings(tmp_path), client, pg_conn, as_of=yesterday, config=CFG, launch=True)
+    assert calls == []
+    assert report.screener_saved is False
+    assert report.onboarded == []
+    assert any("backdated" in e for e in report.errors)
+    assert scan_repo.get_screener_snapshot(pg_conn, yesterday.date(), "most_actives_volume") is None
+    assert scan_repo.list_onboarded(pg_conn).empty
+    assert launched == []
+    # the scan/PIT half is unaffected: still fully re-runnable
+    assert report.scan_saved is True
+    assert scan_repo.get_scan_funnel(pg_conn, yesterday.date()) is not None
+
+
+def test_today_run_still_attempts_screener_and_onboarding(tmp_path, pg_conn, launched, curated, frozen_today):
+    report = run_nightly(_settings(tmp_path), FakeClient(), pg_conn, as_of=AS_OF, config=CFG, launch=True)
+    assert report.screener_saved is True
+    assert report.onboarded == ["HOOD"]
+    assert not any("backdated" in e for e in report.errors)

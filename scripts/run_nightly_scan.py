@@ -3,7 +3,9 @@ record screener snapshots, onboard qualifying most-actives, launch a tagged
 backtest over curated + onboarded symbols.
 
     python scripts/run_nightly_scan.py                    # tonight, iex thresholds
-    python scripts/run_nightly_scan.py --as-of 2026-07-01 # re-run/backdate a night
+    python scripts/run_nightly_scan.py --as-of 2026-07-01 # re-run a past night's SCAN ONLY --
+    #   screener capture + onboarding are live-only and auto-skip whenever
+    #   --as-of != today ET (see rs_spy/scan/nightly.py's module docstring)
     python scripts/run_nightly_scan.py --no-onboard       # scan + record only
 
 Needs .env (Alpaca keys) and Postgres up (docker compose up -d). Scheduling:

@@ -6,6 +6,14 @@ NightlyReport.errors instead of killing the job. The scan itself refusing
 (ScanCoverageError -- holiday/outage) DOES propagate: no snapshot should exist
 for such a night.
 
+Backdated re-runs (`as_of` != today ET): `fetch_screener_snapshots` has no
+as-of parameter -- it is always "right now". Saving its payload under a past
+scan_date would silently overwrite that date's genuine archived snapshot
+(save_screener_snapshot is last-write-wins) and poison onboarding with a past
+passing-set crossed with today's most-actives. So a backdated run SKIPS the
+screener-capture and onboarding stages entirely and only re-runs the scan/PIT
+half, which is fully re-runnable by design.
+
 Scheduling (documented, not auto-installed). 17:00 ET capture, RTH-only policy
 (see the spec). This machine runs America/Chicago, so 16:00 CT == 17:00 ET:
 
@@ -33,6 +41,13 @@ from rs_spy.universe import load_universe
 logger = logging.getLogger(__name__)
 
 
+def _today_et() -> pd.Timestamp:
+    """"Today" as a naive calendar timestamp in America/New_York -- the
+    reference used to decide whether a run is backdated. A thin wrapper so
+    tests can pin it instead of depending on the wall clock."""
+    return pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+
+
 @dataclass
 class NightlyReport:
     scan_date: object
@@ -58,15 +73,23 @@ def run_nightly(
 ) -> NightlyReport:
     config = config or ScanConfig()
     if as_of is None:
-        as_of = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+        as_of = _today_et()
     as_of = pd.Timestamp(as_of)
+    if as_of.tzinfo is not None:  # mirror run_universe_scan's normalization
+        as_of = as_of.tz_convert("UTC").tz_localize(None)
     scan_date = as_of.date()
     # backfill/refresh end: exclusive upper bound just past the as-of session
     end = (as_of + pd.Timedelta(days=1)).tz_localize(timezone.utc).to_pydatetime()
     report = NightlyReport(scan_date=scan_date)
+    is_backdated = as_of.normalize() != _today_et()
+    if is_backdated:
+        report.errors.append(
+            "backdated run: screener+onboarding skipped (screener endpoints are real-time-only)"
+        )
 
     # 1) assets + broad daily refresh + scan (a ScanCoverageError propagates:
-    #    no snapshot must exist for a holiday/outage night)
+    #    no snapshot must exist for a holiday/outage night). Fully re-runnable,
+    #    including for a backdated as_of.
     assets = client.fetch_assets()
     report.n_assets = len(assets)
     scan_con = connect_scan(settings.resolved_scan_warehouse_path())
@@ -83,19 +106,22 @@ def run_nightly(
     result.evaluated.to_parquet(artifact_dir / f"{scan_date}.parquet")
     report.scan_saved = True
 
-    # 2) screener capture (isolated)
+    # 2) screener capture (isolated, real-time-only). Skipped entirely for a
+    #    backdated run -- see module docstring.
     snapshots = None
-    try:
-        snapshots = client.fetch_screener_snapshots()
-        for endpoint, payload in snapshots.items():
-            scan_repo.save_screener_snapshot(pg_conn, scan_date, endpoint, payload)
-        report.screener_saved = True
-    except Exception as exc:  # noqa: BLE001 -- isolated stage, recorded not raised
-        logger.exception("screener capture failed")
-        report.errors.append(f"screener: {exc}")
+    if not is_backdated:
+        try:
+            snapshots = client.fetch_screener_snapshots()
+            for endpoint, payload in snapshots.items():
+                scan_repo.save_screener_snapshot(pg_conn, scan_date, endpoint, payload)
+            report.screener_saved = True
+        except Exception as exc:  # noqa: BLE001 -- isolated stage, recorded not raised
+            logger.exception("screener capture failed")
+            report.errors.append(f"screener: {exc}")
 
-    # 3) onboarding (isolated per symbol) + tagged re-run
-    if onboard and snapshots and snapshots.get("most_actives_volume"):
+    # 3) onboarding (isolated per symbol) + tagged re-run. Skipped entirely
+    #    for a backdated run -- see module docstring.
+    if onboard and not is_backdated and snapshots and snapshots.get("most_actives_volume"):
         _run_onboarding(
             settings, client, pg_conn, snapshots["most_actives_volume"],
             result, end, scan_date, report, top_n=top_n, launch=launch,
