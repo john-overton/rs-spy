@@ -18,7 +18,7 @@ def main(shorts: bool = False) -> None:
     settings = get_settings()
     universe = load_universe(settings.config_dir / "universe.yaml")
     earnings_blackout = load_earnings_blackout(settings.config_dir / "reference_overrides.yaml")
-    con = connect(settings.resolved_warehouse_path())
+    con = connect(settings.resolved_warehouse_path(), read_only=True)
 
     all_bars = load_universe_daily_bars(con, universe.all_symbols)
     spy = all_bars[universe.primary_benchmark]

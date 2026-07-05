@@ -46,7 +46,7 @@ def test_main_runs_end_to_end_and_writes_expected_reports(tmp_path, monkeypatch)
 
     monkeypatch.setattr(script, "load_universe", lambda *_: FakeUniverse())
     monkeypatch.setattr(script, "load_earnings_blackout", lambda *_: {})
-    monkeypatch.setattr(script, "connect", lambda *_: object())
+    monkeypatch.setattr(script, "connect", lambda *_, **__: object())
     monkeypatch.setattr(script, "load_universe_m1_bars", lambda con, syms: all_m1)
     monkeypatch.setattr(script, "load_universe_m5_bars", lambda con, syms: all_m5)
     monkeypatch.setattr(script, "load_universe_daily_bars", lambda con, syms: all_d1)
