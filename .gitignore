@@ -19,3 +19,4 @@ reports/
 
 SESSION_SUMMARY.md
 logs/
+.nightly_paused
