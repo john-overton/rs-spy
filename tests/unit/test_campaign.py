@@ -1,8 +1,44 @@
 """Cohort split determinism/stratification + launch/poll orchestration (hermetic)."""
 import uuid
 
-from rs_spy.backtest.campaign import VARIANTS, poll_and_launch, split_cohorts
+from rs_spy.backtest.campaign import (
+    VARIANTS,
+    existing_campaign_labels,
+    poll_and_launch,
+    split_cohorts,
+)
 from rs_spy.universe import SymbolSpec
+
+
+class _FakeCursor:
+    """Records executed (sql, params) pairs; serves canned dict rows per LIKE pattern."""
+
+    def __init__(self, labels_by_pattern):
+        self._labels_by_pattern = labels_by_pattern
+        self.executed = []
+        self._rows = []
+
+    def execute(self, sql, params):
+        self.executed.append((sql, params))
+        pattern = params[0]
+        self._rows = [{"label": lbl} for lbl in self._labels_by_pattern.get(pattern, [])]
+
+    def fetchall(self):
+        return self._rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, labels_by_pattern):
+        self.cur = _FakeCursor(labels_by_pattern)
+
+    def cursor(self):
+        return self.cur
 
 
 def _specs():
@@ -55,6 +91,27 @@ def test_poll_and_launch_respects_max_parallel_and_runs_all():
     assert launched == ids            # every run launched, FIFO
     assert max_live <= 2              # parallelism cap respected
     assert set(out.values()) == {"succeeded"}
+
+
+def test_existing_campaign_labels_empty_store_returns_nothing():
+    conn = _FakeConn({})
+    out = existing_campaign_labels(conn, "jul05", ["baseline", "w12"])
+    assert out == []
+    # one parameterized query per selected variant, pattern per (tag, variant)
+    patterns = [params[0] for _, params in conn.cur.executed]
+    assert patterns == ["m10-jul05-baseline-c%", "m10-jul05-w12-c%"]
+    assert all("%s" in sql for sql, _ in conn.cur.executed)  # parameterized, not f-string
+
+
+def test_existing_campaign_labels_is_per_tag_and_variant():
+    # baseline already ran under this tag; w12 has not -- only baseline collides,
+    # so launching remaining variants later under the same tag must stay possible.
+    conn = _FakeConn({
+        "m10-jul05-baseline-c%": ["m10-jul05-baseline-c1", "m10-jul05-baseline-c2"],
+    })
+    assert existing_campaign_labels(conn, "jul05", ["w12"]) == []
+    out = existing_campaign_labels(conn, "jul05", ["baseline", "w12"])
+    assert out == ["m10-jul05-baseline-c1", "m10-jul05-baseline-c2"]
 
 
 def test_poll_and_launch_reports_failed_runs_without_hanging():

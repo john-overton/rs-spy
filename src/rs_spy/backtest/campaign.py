@@ -32,12 +32,33 @@ VARIANTS: dict[str, dict] = {
 def split_cohorts(symbol_specs: list[SymbolSpec], n_cohorts: int = 4) -> list[list[str]]:
     """Deterministic sector-stratified round-robin. Sorting by (sector, symbol)
     before dealing makes the split independent of input order and spreads each
-    sector across all cohorts (so the per-sector cap binds evenly)."""
+    sector across all cohorts (so the per-sector cap binds evenly). Caveat: the
+    round-robin phase carries across sector boundaries, so uneven sector sizes
+    can drift cohort balance slightly (deliberate design limitation)."""
     ordered = sorted(symbol_specs, key=lambda s: (s.sector, s.symbol))
     cohorts: list[list[str]] = [[] for _ in range(n_cohorts)]
     for i, spec in enumerate(ordered):
         cohorts[i % n_cohorts].append(spec.symbol)
     return cohorts
+
+
+def existing_campaign_labels(conn, tag: str, variants: list[str]) -> list[str]:
+    """Labels of runs already created for this (tag, variant) combination.
+
+    Duplicate-launch guard: re-invoking the driver with the same tag+variant
+    would silently create and launch a second full set of runs, so the driver
+    refuses when this returns anything. Scoped per (tag, variant), NOT per tag,
+    because the intended flow launches --variant baseline first and the
+    remaining variants later under the SAME tag."""
+    found: list[str] = []
+    with conn.cursor() as cur:
+        for vname in variants:
+            cur.execute(
+                "SELECT label FROM runs WHERE label LIKE %s ORDER BY label",
+                (f"m10-{tag}-{vname}-c%",),
+            )
+            found.extend(row["label"] for row in cur.fetchall())
+    return found
 
 
 def create_campaign_runs(
