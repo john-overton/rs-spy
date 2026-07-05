@@ -1450,3 +1450,44 @@ candidate A5: parameterize them). Threshold loosening, retested with the confirm
 is definitively rejected (PF 2.06 -> 1.41 -> 1.02 at 1.0/0.5/0.0): the edge is strong-RRS
 names entered at fresh bias flips. The r5 combo (d1_session + bias_hold_bars=1) equals r4a
 to the cent.
+
+## M7.5 study-suite re-run on the promoted baseline (2026-07-04/05)
+
+`scripts/run_validation_studies.py` re-run (user-run, ~90 min) against the promoted config
+defaults (rrs_m5_window=18, bias_hold_bars=1; commit `8643242`). Baseline reproduces the
+r4a promotion run exactly (13 trades, +$752.57). Full outputs in `reports/m7_studies/`
+(overwriting the M7 originals, which live on in git history and the M7 sections above).
+
+- **3.1 Gate ablation -- the spec's monotonicity hypothesis is CONFIRMED for the first
+  time.** Rule-count buckets are finally populated (30 long trades across buckets vs 7 at
+  M7): trades satisfying all 6 hard rules win 58.3% with +0.20 avg R (expectancy +$65.6);
+  trades unlocked by disabling exactly one rule win 33.3% with -0.39 avg R (+$13.2). More
+  rules = better trades, exactly what 08 §3.1 was designed to test and could never show on
+  degenerate samples (M3.5: all trades in one bucket; M7: 7 trades). Notable detail:
+  disable-ha unlocked the single biggest trade in the study (IBM 2024-07-25, +$524) yet its
+  bucket is still net-worse -- the rule earns its keep on average, not on every trade.
+  Shorts remain weak in every bucket (5 of 6 short trades lost).
+- **3.3 RRS sensitivity**: peak confirmed at window=18 / threshold=1.0 (13 trades, PF 3.71,
+  +$753). threshold=0.75 is a legitimate volume-over-quality alternative (19 trades, PF
+  2.73, +$756 -- same total PnL, more trades, lower PF); window=6 still produces zero
+  trades; window=12 rides almost entirely on AMD (PF 18.5 on 4 trades -- small-sample
+  artifact). With the confirm-fix live the threshold dimension is real, and 1.0 still wins
+  on quality.
+- **3.5 Time-of-day/regime -- first readable slice**: MIDDAY/CHOP longs are the sweet spot
+  (4 trades, 4 wins, +$605 of the +$753 total); MIDDAY/TREND_UP longs are mediocre (5
+  trades, 40% win, +$134). Consistent with the split-half finding (edge concentrated in the
+  2022-23 chop) and with the source doctrine's own "chop is an excellent environment for
+  day trading." Directional only at 13 trades, but now pointing somewhere specific.
+- **3.2 Walk-away**: 984 qualification signals (up from 747 -- w18 default qualifies more),
+  MFE/MAE still large and symmetric (LONG +5.3R/-5.7R, SHORT +6.1R/-6.9R): the raw signal
+  still carries no unmanaged directional edge; selection + timing + management is where the
+  realized PF 3.71 comes from.
+- **3.4 Bias confusion matrix**: identical to M7 (same engine inputs) -- doubles as a
+  sanity check that the suite ran cleanly.
+
+Campaign position after this: the promoted baseline (w18, hold=1, strict, 1.0xATR stops) is
+now validated by the full study suite, with the ablation finally supporting the confluence
+philosophy the system is built on. Open threads, in rough priority: shorts look net-negative
+everywhere (consider shorts_enabled=False for the headline config, or a short-side
+recalibration); lever A5 (dip-quality parameterization) if Path B is pursued further;
+universe expansion as the remaining sample-size multiplier.
