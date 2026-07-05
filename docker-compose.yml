@@ -1,0 +1,34 @@
+# Postgres runs-store for the backtest engine (runs / trades / equity / status).
+# Market-data bars stay in DuckDB (data/warehouse.duckdb) -- this DB holds only
+# backtest results so multiple runs can be recorded and queried concurrently.
+#
+#   docker compose up -d      # start Postgres in the background
+#   docker compose down       # stop (keeps the named volume / data)
+#   docker compose down -v    # stop and wipe the data volume
+#
+# Credentials/db name match the default Settings.database_url
+# (postgresql://rs_spy:rs_spy@localhost:55432/rs_spy). Override via .env if changed.
+#
+# Host port is 55432 (not the standard 5432) to avoid colliding with any native
+# Postgres you may already run on 5432. The container still listens on 5432
+# internally; only the published host port differs.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rs_spy_pg
+    environment:
+      POSTGRES_USER: rs_spy
+      POSTGRES_PASSWORD: rs_spy
+      POSTGRES_DB: rs_spy
+    ports:
+      - "55432:5432"
+    volumes:
+      - rs_spy_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rs_spy -d rs_spy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  rs_spy_pgdata:

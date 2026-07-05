@@ -18,7 +18,7 @@ def main() -> None:
     settings = get_settings()
     universe = load_universe(settings.config_dir / "universe.yaml")
     spy, qqq = universe.primary_benchmark, universe.secondary_benchmark
-    con = connect(settings.resolved_warehouse_path())
+    con = connect(settings.resolved_warehouse_path(), read_only=True)
 
     benchmarks = [spy, qqq]
     all_m1 = load_universe_m1_bars(con, benchmarks)

@@ -83,7 +83,7 @@ def main(
     settings = get_settings()
     universe = load_universe(settings.config_dir / "universe.yaml")
     earnings_blackout = load_earnings_blackout(settings.config_dir / "reference_overrides.yaml")
-    con = connect(settings.resolved_warehouse_path())
+    con = connect(settings.resolved_warehouse_path(), read_only=True)
 
     spy, qqq = universe.primary_benchmark, universe.secondary_benchmark
     trade_symbols = universe.trade_symbols
