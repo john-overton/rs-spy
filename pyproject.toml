@@ -24,6 +24,9 @@ dev = [
     "ruff>=0.5",
     "testcontainers[postgres]>=4.0",
 ]
+universe = [
+    "yfinance>=0.2",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
