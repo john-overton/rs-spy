@@ -5,6 +5,8 @@ row-shaping logic in our wrapper is under test.
 """
 from types import SimpleNamespace
 
+from alpaca.common.exceptions import APIError
+
 from rs_spy.config import Settings
 from rs_spy.data.alpaca_client import ASSET_COLUMNS, AlpacaClient
 
@@ -65,3 +67,48 @@ def test_fetch_screener_snapshots_returns_three_json_safe_payloads():
     # one most-actives call per ranking metric, with the requested tops
     kinds = [c[0] for c in calls]
     assert kinds.count("most_actives") == 2 and kinds.count("movers") == 1
+
+
+def test_fetch_assets_retries_a_transient_rate_limit_then_succeeds(monkeypatch):
+    monkeypatch.setattr("rs_spy.data.alpaca_client.time.sleep", lambda *_: None)
+    client = _client()
+    attempts = []
+
+    def flaky_get_all_assets(request):
+        attempts.append(request)
+        if len(attempts) == 1:
+            raise APIError("429 Too Many Requests")
+        return [_asset("AAPL", "Apple Inc. Common Stock", "NASDAQ", attributes=["has_options"])]
+
+    client._trading_client = SimpleNamespace(get_all_assets=flaky_get_all_assets)
+    df = client.fetch_assets()
+    assert len(attempts) == 2  # one failure, one retry that succeeds
+    assert list(df["symbol"]) == ["AAPL"]
+
+
+def test_fetch_screener_snapshots_retries_a_transient_rate_limit_then_succeeds(monkeypatch):
+    monkeypatch.setattr("rs_spy.data.alpaca_client.time.sleep", lambda *_: None)
+    client = _client()
+    attempts = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def model_dump(self, mode="json"):
+            return self._payload
+
+    def flaky_most_actives(request):
+        attempts.append(request)
+        if len(attempts) == 1:
+            raise APIError("429 Too Many Requests")
+        return FakeResponse({"most_actives": [{"symbol": "HOOD", "volume": 1e8}]})
+
+    client._screener_client = SimpleNamespace(
+        get_most_actives=flaky_most_actives,
+        get_market_movers=lambda request: FakeResponse({"gainers": [], "losers": []}),
+    )
+    out = client.fetch_screener_snapshots()
+    # 1 failure + 1 retry-success for the VOLUME call, + 1 success for TRADES
+    assert len(attempts) == 3
+    assert out["most_actives_volume"]["most_actives"][0]["symbol"] == "HOOD"

@@ -173,3 +173,18 @@ def test_today_run_still_attempts_screener_and_onboarding(tmp_path, pg_conn, lau
     assert report.screener_saved is True
     assert report.onboarded == ["HOOD"]
     assert not any("backdated" in e for e in report.errors)
+
+
+def test_screener_capture_runs_before_refresh_and_scan(tmp_path, pg_conn, launched, curated, frozen_today):
+    """Fix 2: the screener snapshot is independent of the scan and must be
+    captured before the slow refresh+scan stage, so a slow/failed refresh
+    can never cost the day's irreplaceable snapshot."""
+    client = FakeClient()
+    call_order = []
+    orig_screener = client.fetch_screener_snapshots
+    orig_bars = client.fetch_bars
+    client.fetch_screener_snapshots = lambda **kw: (call_order.append("screener"), orig_screener(**kw))[1]
+    client.fetch_bars = lambda *a, **kw: (call_order.append("bars"), orig_bars(*a, **kw))[1]
+    run_nightly(_settings(tmp_path), client, pg_conn, as_of=AS_OF, config=CFG)
+    assert call_order[0] == "screener"
+    assert "bars" in call_order

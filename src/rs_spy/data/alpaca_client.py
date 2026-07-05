@@ -103,7 +103,7 @@ class AlpacaClient:
             adjustment=Adjustment.ALL,
             feed=DataFeed.IEX,
         )
-        bar_set = self._request_with_retry(request)
+        bar_set = self._request_with_retry(self._client.get_stock_bars, request)
 
         rows = []
         for symbol, bars in bar_set.data.items():
@@ -131,9 +131,9 @@ class AlpacaClient:
         `us_equity`) and no shares float -- the scan's listing gate works from
         name/exchange heuristics instead (see scan/config.py).
         """
-        self._limiter.acquire()
-        assets = self._trading_client.get_all_assets(
-            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        assets = self._request_with_retry(
+            self._trading_client.get_all_assets,
+            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY),
         )
         rows = []
         for a in assets:
@@ -161,25 +161,29 @@ class AlpacaClient:
         are raw model_dump(mode="json") dicts, stored verbatim as JSONB.
         """
         out: dict[str, dict] = {}
-        self._limiter.acquire()
-        out["most_actives_volume"] = self._screener_client.get_most_actives(
-            MostActivesRequest(by=MostActivesBy.VOLUME, top=top_actives)
+        out["most_actives_volume"] = self._request_with_retry(
+            self._screener_client.get_most_actives,
+            MostActivesRequest(by=MostActivesBy.VOLUME, top=top_actives),
         ).model_dump(mode="json")
-        self._limiter.acquire()
-        out["most_actives_trades"] = self._screener_client.get_most_actives(
-            MostActivesRequest(by=MostActivesBy.TRADES, top=top_actives)
+        out["most_actives_trades"] = self._request_with_retry(
+            self._screener_client.get_most_actives,
+            MostActivesRequest(by=MostActivesBy.TRADES, top=top_actives),
         ).model_dump(mode="json")
-        self._limiter.acquire()
-        out["market_movers"] = self._screener_client.get_market_movers(
-            MarketMoversRequest(top=top_movers)
+        out["market_movers"] = self._request_with_retry(
+            self._screener_client.get_market_movers,
+            MarketMoversRequest(top=top_movers),
         ).model_dump(mode="json")
         return out
 
-    def _request_with_retry(self, request: StockBarsRequest):
+    def _request_with_retry(self, fn, *args, **kwargs):
+        """Retry `fn(*args, **kwargs)` on a rate-limited APIError with
+        exponential backoff. Shared by fetch_bars, fetch_assets, and
+        fetch_screener_snapshots -- every outbound Alpaca call goes through
+        this one retry policy."""
         for attempt in range(1, _MAX_RETRIES + 1):
             self._limiter.acquire()
             try:
-                return self._client.get_stock_bars(request)
+                return fn(*args, **kwargs)
             except APIError as exc:
                 is_rate_limited = "429" in str(exc) or "rate limit" in str(exc).lower()
                 if not is_rate_limited or attempt == _MAX_RETRIES:

@@ -1,10 +1,13 @@
-"""Nightly discovery orchestration: refresh -> scan -> record -> onboard -> re-run.
+"""Nightly discovery orchestration: screener -> refresh -> scan -> record -> onboard -> re-run.
 
 Each stage is isolated: a screener failure never blocks the scan snapshot, one
 symbol's failed onboarding never blocks the others, and every failure lands in
 NightlyReport.errors instead of killing the job. The scan itself refusing
 (ScanCoverageError -- holiday/outage) DOES propagate: no snapshot should exist
 for such a night.
+
+The screener-capture stage runs FIRST, before the (15-45min) refresh+scan, so
+a slow or failed refresh can never cost the day's irreplaceable snapshot.
 
 Backdated re-runs (`as_of` != today ET): `fetch_screener_snapshots` has no
 as-of parameter -- it is always "right now". Saving its payload under a past
@@ -87,7 +90,22 @@ def run_nightly(
             "backdated run: screener+onboarding skipped (screener endpoints are real-time-only)"
         )
 
-    # 1) assets + broad daily refresh + scan (a ScanCoverageError propagates:
+    # 1) screener capture (isolated, real-time-only). Runs BEFORE the
+    #    refresh+scan below (independent of scan results) so a slow/failed
+    #    15-45min refresh can never cost the day's irreplaceable snapshot.
+    #    Skipped entirely for a backdated run -- see module docstring.
+    snapshots = None
+    if not is_backdated:
+        try:
+            snapshots = client.fetch_screener_snapshots()
+            for endpoint, payload in snapshots.items():
+                scan_repo.save_screener_snapshot(pg_conn, scan_date, endpoint, payload)
+            report.screener_saved = True
+        except Exception as exc:  # noqa: BLE001 -- isolated stage, recorded not raised
+            logger.exception("screener capture failed")
+            report.errors.append(f"screener: {exc}")
+
+    # 2) assets + broad daily refresh + scan (a ScanCoverageError propagates:
     #    no snapshot must exist for a holiday/outage night). Fully re-runnable,
     #    including for a backdated as_of.
     assets = client.fetch_assets()
@@ -105,19 +123,6 @@ def run_nightly(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     result.evaluated.to_parquet(artifact_dir / f"{scan_date}.parquet")
     report.scan_saved = True
-
-    # 2) screener capture (isolated, real-time-only). Skipped entirely for a
-    #    backdated run -- see module docstring.
-    snapshots = None
-    if not is_backdated:
-        try:
-            snapshots = client.fetch_screener_snapshots()
-            for endpoint, payload in snapshots.items():
-                scan_repo.save_screener_snapshot(pg_conn, scan_date, endpoint, payload)
-            report.screener_saved = True
-        except Exception as exc:  # noqa: BLE001 -- isolated stage, recorded not raised
-            logger.exception("screener capture failed")
-            report.errors.append(f"screener: {exc}")
 
     # 3) onboarding (isolated per symbol) + tagged re-run. Skipped entirely
     #    for a backdated run -- see module docstring.
