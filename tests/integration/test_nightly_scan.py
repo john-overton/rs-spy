@@ -175,6 +175,37 @@ def test_today_run_still_attempts_screener_and_onboarding(tmp_path, pg_conn, lau
     assert not any("backdated" in e for e in report.errors)
 
 
+def test_parquet_write_failure_does_not_undo_the_committed_scan_save(
+    tmp_path, pg_conn, launched, curated, frozen_today, monkeypatch
+):
+    """Fix 4: the parquet artifact is a convenience export, written after
+    scan_repo.save_scan() has already committed to Postgres. A failure
+    writing it must land in report.errors but must NOT flip scan_saved back
+    to False -- the DB save already succeeded and is the source of truth."""
+    monkeypatch.setattr(
+        "pandas.DataFrame.to_parquet",
+        lambda self, *a, **kw: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    report = run_nightly(_settings(tmp_path), FakeClient(), pg_conn, as_of=AS_OF, config=CFG)
+    assert report.scan_saved is True
+    assert any("parquet" in e for e in report.errors)
+    assert scan_repo.get_scan_funnel(pg_conn, AS_OF.date()) is not None
+
+
+def test_tz_aware_as_of_is_normalized_to_naive_utc(tmp_path, pg_conn, launched, curated, monkeypatch):
+    """Fix 4: a tz-aware as_of must be normalized (aware -> UTC -> naive)
+    exactly like run_universe_scan does, so scan_date/report don't drift by
+    timezone. Anchors "today" to a tz-aware moment on the same UTC calendar
+    date as AS_OF."""
+    aware_today = AS_OF.tz_localize("UTC")
+    monkeypatch.setattr("rs_spy.scan.nightly._today_et", lambda: AS_OF)
+    report = run_nightly(
+        _settings(tmp_path), FakeClient(), pg_conn, as_of=aware_today, config=CFG, launch=False
+    )
+    assert report.scan_date == AS_OF.date()
+    assert report.screener_saved is True  # not treated as backdated
+
+
 def test_screener_capture_runs_before_refresh_and_scan(tmp_path, pg_conn, launched, curated, frozen_today):
     """Fix 2: the screener snapshot is independent of the scan and must be
     captured before the slow refresh+scan stage, so a slow/failed refresh

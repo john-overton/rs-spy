@@ -64,6 +64,9 @@ class NightlyReport:
     scan_date: object
     n_assets: int = 0
     n_passed: int = 0
+    # True once scan_repo.save_scan() has committed to Postgres -- the source
+    # of truth -- independent of whether the convenience parquet artifact
+    # write below it also succeeded (a parquet failure lands in `errors`).
     scan_saved: bool = False
     screener_saved: bool = False
     onboarded: list = field(default_factory=list)
@@ -127,10 +130,14 @@ def run_nightly(
     report.n_passed = len(result.passing)
 
     scan_repo.save_scan(pg_conn, scan_date, result.evaluated, result.funnel)
+    report.scan_saved = True
     artifact_dir = settings.reports_dir / "universe_scan"
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    result.evaluated.to_parquet(artifact_dir / f"{scan_date}.parquet")
-    report.scan_saved = True
+    try:
+        result.evaluated.to_parquet(artifact_dir / f"{scan_date}.parquet")
+    except Exception as exc:  # noqa: BLE001 -- convenience artifact; the PG save above already committed
+        logger.exception("parquet artifact write failed")
+        report.errors.append(f"parquet: {exc}")
 
     # 3) onboarding + maintenance (isolated per symbol) + tagged re-run.
     #    Skipped entirely for a backdated run -- see module docstring.

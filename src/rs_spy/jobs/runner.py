@@ -109,6 +109,12 @@ def _execute_backtest(config: BacktestConfigM5):
     sectors = {s.symbol: s.sector for s in universe.universe}
     for sym in trade_symbols:
         sectors.setdefault(sym, "UNKNOWN")  # onboarded symbols have no GICS mapping (v1)
+    # Known limitation: EVERY onboarded symbol shares the single "UNKNOWN" sector
+    # bucket, so the engine's max_per_sector cap (default 2, see
+    # BacktestConfigM5) throttles onboarded names as a group per tradeable-list
+    # rebuild -- e.g. at most 2 onboarded symbols can ever be listed/held
+    # simultaneously, regardless of how many pass the selection gates. Documented,
+    # not changed (see IMPLEMENTATION.md).
 
     result = run_m5_backtest(
         universe_m1={s: all_m1[s] for s in trade_symbols},

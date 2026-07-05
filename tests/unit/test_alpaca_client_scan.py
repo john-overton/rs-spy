@@ -69,6 +69,21 @@ def test_fetch_screener_snapshots_returns_three_json_safe_payloads():
     assert kinds.count("most_actives") == 2 and kinds.count("movers") == 1
 
 
+def test_fetch_assets_drops_duplicate_symbols():
+    # a duplicate symbol would violate the (scan_date, symbol) PK in
+    # save_scan's COPY -- keep the first occurrence, drop the rest.
+    client = _client()
+    client._trading_client = SimpleNamespace(
+        get_all_assets=lambda request: [
+            _asset("AAPL", "Apple Inc. Common Stock", "NASDAQ", attributes=["has_options"]),
+            _asset("AAPL", "Apple Inc. Common Stock (dup listing)", "NASDAQ", attributes=None),
+            _asset("XYZ", "Xyz Corp", "NYSE", attributes=None),
+        ]
+    )
+    df = client.fetch_assets()
+    assert list(df["symbol"]) == ["AAPL", "XYZ"]
+
+
 def test_fetch_assets_retries_a_transient_rate_limit_then_succeeds(monkeypatch):
     monkeypatch.setattr("rs_spy.data.alpaca_client.time.sleep", lambda *_: None)
     client = _client()

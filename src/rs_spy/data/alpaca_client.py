@@ -129,7 +129,9 @@ class AlpacaClient:
 
         Alpaca has no security-type field (common stock vs ETF/ADR are all
         `us_equity`) and no shares float -- the scan's listing gate works from
-        name/exchange heuristics instead (see scan/config.py).
+        name/exchange heuristics instead (see scan/config.py). Deduplicated
+        by symbol (first occurrence wins) -- a duplicate would violate the
+        (scan_date, symbol) primary key in scan_repository.save_scan's COPY.
         """
         assets = self._request_with_retry(
             self._trading_client.get_all_assets,
@@ -149,7 +151,8 @@ class AlpacaClient:
                     "optionable": bool(attributes & _OPTION_ATTRIBUTES),
                 }
             )
-        return pd.DataFrame(rows, columns=ASSET_COLUMNS)
+        df = pd.DataFrame(rows, columns=ASSET_COLUMNS)
+        return df.drop_duplicates(subset="symbol", keep="first").reset_index(drop=True)
 
     def fetch_screener_snapshots(
         self, top_actives: int = 100, top_movers: int = 50

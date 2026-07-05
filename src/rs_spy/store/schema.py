@@ -113,7 +113,9 @@ CREATE TABLE IF NOT EXISTS onboarded_symbols (
 
 
 def init_schema(conn: psycopg.Connection) -> None:
-    """Idempotently create runs/trades/equity_curves. Safe on every start."""
+    """Idempotently create runs/trades/equity_curves plus the M9 scan tables
+    (scan_runs/universe_snapshots/screener_snapshots/onboarded_symbols).
+    Safe on every start."""
     with conn.cursor() as cur:
         cur.execute(_SCHEMA)
     conn.commit()
