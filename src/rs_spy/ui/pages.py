@@ -4,6 +4,7 @@ import streamlit as st
 
 import rs_spy.ui.data as data
 import rs_spy.ui.form as form
+from rs_spy.backtest.aggregate import CampaignIncompleteError, aggregate_campaign
 from rs_spy.backtest.engine_m5 import BacktestConfigM5
 
 _STATUS_ICONS = {"queued": "⏸", "running": "▶", "succeeded": "✅", "failed": "❌"}
@@ -203,4 +204,33 @@ def scan_page() -> None:
 
 def campaigns_page() -> None:
     st.title("Campaigns")
-    st.info("Coming in Task 7.")
+    conn = data.get_conn()
+    groups = data.campaign_groups(conn)
+    if groups.empty:
+        st.info("No campaign runs found (labels m10-<tag>-<variant>-c<n>).")
+        return
+    st.dataframe(groups, hide_index=True)
+
+    options = [f"{r.tag} / {r.variant}" for r in groups.itertuples()]
+    pick = st.selectbox("Campaign", ["(choose)"] + options, key="campaign_pick")
+    if pick == "(choose)":
+        return
+    tag, variant = (s.strip() for s in pick.split("/"))
+    row = groups[(groups["tag"] == tag) & (groups["variant"] == variant)].iloc[0]
+
+    if row["statuses"] != ["succeeded"]:
+        st.warning(f"Campaign incomplete — cohort statuses: {row['statuses']}")
+        return
+    try:
+        agg = aggregate_campaign(conn, tag, variant)
+    except CampaignIncompleteError as e:
+        st.warning(str(e))
+        return
+    st.caption(f"{agg['n_runs']} cohort runs pooled")
+    st.dataframe(
+        pd.DataFrame(sorted(agg["metrics"].items()), columns=["metric", "value"]),
+        hide_index=True,
+    )
+    if agg["equity"] is not None:
+        st.line_chart(agg["equity"])
+    st.dataframe(agg["trades"], hide_index=True)

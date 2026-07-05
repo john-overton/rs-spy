@@ -97,3 +97,22 @@ def universe_snapshot(conn, scan_date) -> pd.DataFrame:
 
 def onboarded_df(conn) -> pd.DataFrame:
     return scan_repo.list_onboarded(conn)
+
+
+def campaign_groups(conn) -> pd.DataFrame:
+    """One row per campaign (tag, variant) found in recent run labels."""
+    rows = repo.list_runs(conn, limit=500)
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        parsed = parse_campaign_label(r.get("label"))
+        if parsed is None:
+            continue
+        tag, variant, _n = parsed
+        g = groups.setdefault((tag, variant), {"n_cohorts": 0, "statuses": set()})
+        g["n_cohorts"] += 1
+        g["statuses"].add(r["status"])
+    return pd.DataFrame([
+        {"tag": t, "variant": v, "n_cohorts": g["n_cohorts"],
+         "statuses": sorted(g["statuses"])}
+        for (t, v), g in sorted(groups.items())
+    ], columns=["tag", "variant", "n_cohorts", "statuses"])

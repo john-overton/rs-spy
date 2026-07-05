@@ -233,3 +233,29 @@ def test_scan_page_with_no_scans_yet(monkeypatch):
     at.run()
     assert not at.exception
     assert at.info                    # friendly empty state, no crash
+
+
+def _run_campaigns_page():
+    from rs_spy.ui.pages import campaigns_page
+    campaigns_page()
+
+
+def test_campaigns_page_aggregates_complete_campaigns(monkeypatch):
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "campaign_groups", lambda conn: pd.DataFrame(
+        [{"tag": "jul05", "variant": "baseline", "n_cohorts": 4,
+          "statuses": ["succeeded"]}]))
+    import rs_spy.ui.pages as pages_mod
+    monkeypatch.setattr(pages_mod, "aggregate_campaign", lambda conn, tag, variant: {
+        "n_runs": 4,
+        "trades": pd.DataFrame({"symbol": ["AAPL"], "pnl": [10.0]}),
+        "equity": pd.Series([400.0, 410.0],
+                            index=pd.date_range("2026-07-01", periods=2, tz="UTC")),
+        "metrics": {"n_trades": 40, "profit_factor": 2.5},
+    })
+    at = AppTest.from_function(_run_campaigns_page)
+    at.run()
+    at.selectbox(key="campaign_pick").set_value("jul05 / baseline")
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe) >= 2   # groups table + pooled metrics table

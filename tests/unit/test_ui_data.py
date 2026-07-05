@@ -32,3 +32,20 @@ def test_headline_row_extracts_metrics_when_present():
            "metrics": {"n_trades": 13, "profit_factor": 3.71, "total_pnl": 753.0}}
     row = _headline_row(run)
     assert row["n_trades"] == 13 and row["profit_factor"] == 3.71 and row["total_pnl"] == 753.0
+
+
+def test_campaign_groups_rolls_up_by_tag_and_variant(monkeypatch):
+    import rs_spy.ui.data as data_mod
+    rows = [
+        {"label": "m10-jul05-baseline-c1", "status": "succeeded"},
+        {"label": "m10-jul05-baseline-c2", "status": "running"},
+        {"label": "m10-jul05-w12-c1", "status": "succeeded"},
+        {"label": "onboarding-2026-07-06", "status": "succeeded"},  # not a campaign
+        {"label": None, "status": "failed"},
+    ]
+    monkeypatch.setattr(data_mod.repo, "list_runs", lambda conn, limit=500: rows)
+    df = data_mod.campaign_groups(None)
+    assert len(df) == 2
+    base = df[(df["tag"] == "jul05") & (df["variant"] == "baseline")].iloc[0]
+    assert base["n_cohorts"] == 2
+    assert base["statuses"] == ["running", "succeeded"]
