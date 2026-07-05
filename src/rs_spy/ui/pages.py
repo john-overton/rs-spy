@@ -130,7 +130,30 @@ def _widget(spec: dict):
 
 def compare_page() -> None:
     st.title("Compare")
-    st.info("Coming in Task 5.")
+    conn = data.get_conn()
+    runs = data.runs_df(conn, limit=200)
+    done = runs[runs["status"] == "succeeded"]
+    if done.empty:
+        st.info("No completed runs to compare yet.")
+        return
+    labels = done["label"].fillna(done["run_id"].astype(str)).tolist()
+    picked = st.multiselect("Runs to compare", labels, key="compare_runs")
+    if not picked:
+        return
+    chosen = done[done["label"].isin(picked)]
+
+    cols = {}
+    curves = {}
+    for _, row in chosen.iterrows():
+        run = data.run_detail(conn, row["run_id"]) or {}
+        cols[row["label"]] = run.get("metrics") or {}
+        eq = data.equity_series(conn, row["run_id"])
+        if eq is not None and len(eq):
+            curves[row["label"]] = eq / eq.iloc[0] * 100.0  # rebased to 100
+
+    st.dataframe(pd.DataFrame(cols))
+    if curves:
+        st.line_chart(pd.DataFrame(curves))
 
 
 def scan_page() -> None:

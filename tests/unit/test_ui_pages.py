@@ -127,3 +127,23 @@ def test_configure_page_submits_defaults_and_launches(monkeypatch):
     config, label = launched[0]
     assert config == BacktestConfigM5()   # untouched form launches pure defaults
     assert label == "my-run"
+
+
+def _run_compare_page():
+    from rs_spy.ui.pages import compare_page
+    compare_page()
+
+
+def test_compare_page_renders_side_by_side_metrics(monkeypatch):
+    runs = _runs_fixture()
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "runs_df", lambda conn, limit=200: runs)
+    monkeypatch.setattr(data, "run_detail", lambda conn, rid: _detail_fixture())
+    monkeypatch.setattr(data, "equity_series", lambda conn, rid: pd.Series(
+        [200.0, 220.0], index=pd.date_range("2026-07-01", periods=2, tz="UTC")))
+    at = AppTest.from_function(_run_compare_page)
+    at.run()
+    at.multiselect(key="compare_runs").set_value(["baseline"])
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe) >= 1   # the metrics comparison table
