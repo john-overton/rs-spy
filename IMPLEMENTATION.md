@@ -1418,3 +1418,35 @@ funnel echo hides zero-valued counters (funnel.json has them all).
 **Next**: tuning Rounds 1-4 per `docs/tuning/m7.5-tuning-matrix.md` §3 -- Round 1 (dip-arm
 alert-model redesign, the structural unlock) is the first real experiment; every run gets a
 row in `docs/tuning/ledger.csv`.
+
+## M7.5 R1+R4: campaign levers built + experiment rounds run (2026-07-04)
+
+Second M7.5 build milestone (plan `docs/superpowers/plans/2026-07-04-m7.5-round1-round4.md`,
+commits `16968b8..26be6ac`, 5 tasks all approved first-pass, final whole-branch review's one
+Important finding -- a funnel-partition leak in the new dip-hold modes -- fixed and
+independently verified; test suite 215 -> 228). Two deliberate behavior changes: (1)
+`trail_stop` exit label split from `hard_stop` (a stop exit after the 1.5xATR trail trigger
+armed is a managed exit, and no longer feeds the same-day lockout or the consecutive-stop-out
+halt -- the spec's stop-OUT semantics); (2) `BacktestConfigM5.rrs_m5_window` default promoted
+12 -> 18 per the Rounds 2-3 sweep. New knobs: `bias_hold_bars` (2 = old behavior exactly),
+`confirm_not_extended_atr_mult` + config RRS thresholds now reaching the (previously
+hardcoded-at-±1.0) `confirm_trigger_entry_*` recheck, and `dip_hold_mode`
+{strict, d1_session, grace} + `dip_hold_grace_bars` -- the Round 1 "alert model" that lets a
+QUALIFIED symbol survive its own dip (hold gate = gates minus {rrs_m5, vwap,
+one_candle_wonder}; session reset in d1_session; strict is bit-for-bit the old behavior).
+Funnel gained `*_trigger_killed_by_gate` so the coincidence partition is exhaustive in every
+mode. Driver gained `--config-json`/`--run-tag`.
+
+**Experiment results** (user-run manually after background jobs were repeatedly killed on
+this machine; all rows in `docs/tuning/ledger.csv`, analysis in
+`docs/tuning/m7.5-tuning-matrix.md` "Rounds 1+4+5" section): `bias_hold_bars=1` is the
+campaign's best single lever -- strictly additive, 13 trades / PF 3.71 / +$753 vs the
+10 / 2.06 / +$262 anchor, capturing the exact AMD trade M7's ablation flagged -- PROMOTED
+candidate pending a robustness pass. The alert model works mechanically (342 dip-arms vs 4
+under strict) but Path B has still never converted: ~200 die at the doctrine-level bias veto
+(dips recover while SPY is still not bullish), ~90 at `dip_quality_pass_long`, whose
+VWAP-held + shallow-depth constants structurally contradict an RRS-zero-cross dip (new lever
+candidate A5: parameterize them). Threshold loosening, retested with the confirm fix live,
+is definitively rejected (PF 2.06 -> 1.41 -> 1.02 at 1.0/0.5/0.0): the edge is strong-RRS
+names entered at fresh bias flips. The r5 combo (d1_session + bias_hold_bars=1) equals r4a
+to the cent.
