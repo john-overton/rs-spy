@@ -26,6 +26,7 @@ def config_to_jsonb(config: BacktestConfigM5) -> dict:
     """dataclass -> JSON-safe dict. frozenset disabled_gates -> sorted list."""
     d = dataclasses.asdict(config)
     d["disabled_gates"] = sorted(d["disabled_gates"])
+    d["extra_symbols"] = list(d["extra_symbols"])
     return d
 
 def config_from_jsonb(data: dict) -> BacktestConfigM5:
@@ -36,6 +37,8 @@ def config_from_jsonb(data: dict) -> BacktestConfigM5:
     kwargs = {k: v for k, v in data.items() if k in fields}
     if "disabled_gates" in kwargs:
         kwargs["disabled_gates"] = frozenset(kwargs["disabled_gates"])
+    if "extra_symbols" in kwargs:
+        kwargs["extra_symbols"] = tuple(kwargs["extra_symbols"])
     return BacktestConfigM5(**kwargs)
 
 

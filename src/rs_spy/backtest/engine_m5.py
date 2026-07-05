@@ -85,6 +85,12 @@ class BacktestConfigM5:
     # dip_hold_grace_bars consecutive failing bars before demotion.
     dip_hold_mode: str = "strict"
     dip_hold_grace_bars: int = 24
+    # M9 onboarding: additional trade symbols beyond config/universe.yaml.
+    # INERT inside this engine (the symbol set is whatever frames the caller
+    # passes) -- consumed by jobs/runner.py, which loads + trades these on top
+    # of the curated universe. Lives on the config so the runs-store JSONB
+    # records exactly which onboarded symbols each tagged run included.
+    extra_symbols: tuple = ()
 
 
 @dataclass

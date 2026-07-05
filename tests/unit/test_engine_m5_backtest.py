@@ -79,6 +79,40 @@ def test_prepare_m5_returns_calendar_matching_spy_m5_index(universe):
     assert "regime_d1_m5" not in prepared.bias_df.columns  # lives on PreparedM5 directly
 
 
+def test_short_history_extra_symbol_cannot_shrink_the_master_calendar(universe):
+    """Spec guard (M9 onboarding): a newly onboarded symbol with short history
+    must extend, never truncate, the shared picture. The master calendar is
+    SPY's own M5 index, so adding a symbol that only traded the last 3
+    sessions must leave the calendar bit-for-bit identical."""
+    from rs_spy.data.resample import resample_ohlcv
+
+    short_m1 = _build_m1(DATES[-3:], start_price=30.0, seed=77)
+    short_m5 = resample_ohlcv(short_m1, "5min")
+    short_d1 = _build_d1(short_m1)
+
+    base = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"]},
+        universe_m5={"AAPL": universe["aapl_m5"]},
+        universe_d1={"AAPL": universe["aapl_d1"]},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology"},
+        earnings_blackout=None,
+        config=BacktestConfigM5(),
+    )
+    with_short = _prepare_m5(
+        universe_m1={"AAPL": universe["aapl_m1"], "SHORTY": short_m1},
+        universe_m5={"AAPL": universe["aapl_m5"], "SHORTY": short_m5},
+        universe_d1={"AAPL": universe["aapl_d1"], "SHORTY": short_d1},
+        spy_m1=universe["spy_m1"], spy_m5=universe["spy_m5"], spy_d1=universe["spy_d1"],
+        qqq_m1=universe["qqq_m1"], qqq_m5=universe["qqq_m5"],
+        sectors={"AAPL": "Technology", "SHORTY": "UNKNOWN"},
+        earnings_blackout=None,
+        config=BacktestConfigM5(),
+    )
+    assert with_short.calendar.equals(base.calendar)
+
+
 def test_prepare_m5_per_symbol_outputs_are_reindexed_onto_the_master_calendar(universe):
     prepared = _prepare_m5(
         universe_m1={"AAPL": universe["aapl_m1"]},

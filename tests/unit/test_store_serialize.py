@@ -40,6 +40,17 @@ def test_config_from_jsonb_tolerates_unknown_and_missing_keys():
     assert restored.stop_atr_mult == BacktestConfigM5().stop_atr_mult
 
 
+def test_extra_symbols_round_trips_as_a_tuple():
+    from rs_spy.store.serialize import config_from_jsonb, config_to_jsonb
+
+    cfg = BacktestConfigM5(extra_symbols=("HOOD", "SOFI"))
+    data = config_to_jsonb(cfg)
+    assert data["extra_symbols"] == ["HOOD", "SOFI"]  # JSON-safe list in storage
+    back = config_from_jsonb(data)
+    assert back.extra_symbols == ("HOOD", "SOFI")  # tuple again (dataclass eq/hash)
+    assert back == cfg
+
+
 def test_sanitize_metrics_maps_inf_and_nan_to_none():
     metrics = {
         "n_trades": 3,

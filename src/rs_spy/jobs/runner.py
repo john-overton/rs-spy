@@ -42,6 +42,14 @@ def _git_sha() -> str | None:
         return None
 
 
+def _trade_symbols(universe, config: BacktestConfigM5) -> list[str]:
+    """Curated trade symbols plus config.extra_symbols (M9 onboarding),
+    order-preserving, minus anything already curated or a benchmark."""
+    known = set(universe.all_symbols)
+    extra = [s for s in config.extra_symbols if s not in known]
+    return [*universe.trade_symbols, *extra]
+
+
 def run_job(
     run_id: uuid.UUID | None = None,
     config: BacktestConfigM5 | None = None,
@@ -89,15 +97,18 @@ def _execute_backtest(config: BacktestConfigM5):
         )
     con = connect(warehouse_path, read_only=True)
     try:
-        all_m1 = load_universe_m1_bars(con, universe.all_symbols)
-        all_m5 = load_universe_m5_bars(con, universe.all_symbols)
-        all_d1 = load_universe_daily_bars(con, universe.all_symbols)
+        trade_symbols = _trade_symbols(universe, config)
+        load_symbols = list(dict.fromkeys([*universe.all_symbols, *trade_symbols]))
+        all_m1 = load_universe_m1_bars(con, load_symbols)
+        all_m5 = load_universe_m5_bars(con, load_symbols)
+        all_d1 = load_universe_daily_bars(con, load_symbols)
     finally:
         con.close()
 
     spy, qqq = universe.primary_benchmark, universe.secondary_benchmark
-    trade_symbols = universe.trade_symbols
     sectors = {s.symbol: s.sector for s in universe.universe}
+    for sym in trade_symbols:
+        sectors.setdefault(sym, "UNKNOWN")  # onboarded symbols have no GICS mapping (v1)
 
     result = run_m5_backtest(
         universe_m1={s: all_m1[s] for s in trade_symbols},
