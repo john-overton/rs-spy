@@ -1,4 +1,5 @@
 """Page render functions. Every data access goes through `data.<fn>(...)`."""
+import pandas as pd
 import streamlit as st
 
 import rs_spy.ui.data as data
@@ -41,9 +42,44 @@ def runs_page() -> None:
 
 
 def render_run_detail(run_id) -> None:
-    """Replaced with the full detail view in Task 3."""
     conn = data.get_conn()
-    st.write(data.run_detail(conn, run_id))
+    run = data.run_detail(conn, run_id)
+    if run is None:
+        st.warning(f"Run {run_id} not found.")
+        return
+    st.subheader(f"{run['label'] or run['run_id']} — {run['status']}")
+    if run.get("error"):
+        st.error(run["error"])
+
+    metrics = run.get("metrics") or {}
+    if metrics:
+        st.dataframe(
+            pd.DataFrame(sorted(metrics.items()), columns=["metric", "value"]),
+            hide_index=True,
+        )
+
+    equity = data.equity_series(conn, run_id)
+    if equity is not None and len(equity):
+        st.line_chart(equity)
+
+    trades = data.trades_df(conn, run_id)
+    st.caption(f"{len(trades)} trades")
+    if not trades.empty:
+        st.dataframe(trades, hide_index=True)
+
+    funnel = run.get("funnel") or {}
+    if funnel:
+        st.dataframe(
+            pd.DataFrame(sorted(funnel.items()), columns=["counter", "count"]),
+            hide_index=True,
+        )
+
+    with st.expander("Config (exact, as stored)"):
+        st.json(run.get("config") or {})
+
+    if st.button("Clone into Configure & Run", key=f"clone_{run_id}"):
+        st.session_state["clone_run_id"] = run_id
+        st.info("Open the Configure & Run page — the form is pre-seeded from this run.")
 
 
 def configure_page() -> None:
