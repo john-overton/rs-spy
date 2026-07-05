@@ -12,6 +12,20 @@ Guards:
     the calendar-invariance test in tests/unit/test_engine_m5_backtest.py);
   * zero fetched bars in either cadence = incomplete backfill; the caller
     must not record the symbol, so the manifest retries it next night.
+
+Maintenance / re-evaluation: nothing here re-runs itself automatically --
+`onboard_symbol` is a plain function, not a scheduled job. It is, however,
+already resumable (`data/ingest.py::backfill`'s manifest: 'error' units
+re-fetch, 'ok'/'empty' units no-op), so simply calling it again for an
+already-onboarded symbol is safe and repairs two otherwise-permanent gaps:
+an `insufficient_history` symbol that has since matured (more calendar time
+=> more daily bars, once the re-run's `end` reaches into a manifest year
+unit not already marked done), and a partially-failed minute backfill (some
+month units 'error') once the underlying outage clears. `scan/nightly.py`'s
+`_run_maintenance` drives this nightly via
+`data/manifest.py::symbols_with_error_units` (finds the holes) and
+`store/scan_repository.py::update_onboarded` (persists the refreshed
+outcome).
 """
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta

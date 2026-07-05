@@ -188,3 +188,89 @@ def test_screener_capture_runs_before_refresh_and_scan(tmp_path, pg_conn, launch
     run_nightly(_settings(tmp_path), client, pg_conn, as_of=AS_OF, config=CFG)
     assert call_order[0] == "screener"
     assert "bars" in call_order
+
+
+class FreshIPOClient:
+    """HOOD "IPO'd" at `ipo_date` (limited history); SOFI has deep history
+    throughout. Used to exercise the onboarding-maintenance maturation path
+    across two nightly runs separated by a long stretch of wall-clock time."""
+
+    def __init__(self, actives, ipo_date, end):
+        self._actives = list(actives)
+        self._ipo_date = ipo_date
+        self._end = end
+
+    def fetch_assets(self):
+        rows = [
+            {"symbol": s, "name": f"{s} Common Stock", "exchange": "NYSE", "tradable": True,
+             "shortable": True, "fractionable": True, "optionable": True}
+            for s in ["HOOD", "SOFI"]
+        ]
+        return pd.DataFrame(rows, columns=ASSET_COLUMNS)
+
+    def fetch_bars(self, symbols, timespan, start, end):
+        rows = []
+        for s in symbols:
+            floor = self._ipo_date.date() if s == "HOOD" else (self._end - timedelta(days=3000)).date()
+            days = pd.bdate_range(max(start.date(), floor), (end - timedelta(days=1)).date(), tz="UTC")
+            if len(days) == 0:
+                continue
+            if timespan == "minute":
+                idx = pd.DatetimeIndex(
+                    [d + pd.Timedelta(hours=14, minutes=30 + i) for d in days for i in range(3)]
+                )
+            else:
+                idx = pd.DatetimeIndex(days)
+            for t in idx:
+                rows.append({"symbol": s, "timespan": timespan, "ts": t, "open": 50.0, "high": 51.0,
+                             "low": 49.0, "close": 50.0, "volume": int(CFG.min_adv_shares * 2),
+                             "vwap": 50.0, "trade_count": 100})
+        return pd.DataFrame(rows, columns=BAR_COLUMNS)
+
+    def fetch_screener_snapshots(self, top_actives=100, top_movers=50):
+        return {
+            "most_actives_volume": {"most_actives": [
+                {"symbol": s, "volume": 1e8, "trade_count": 1e5} for s in self._actives
+            ]},
+            "most_actives_trades": {"most_actives": []},
+            "market_movers": {"gainers": [], "losers": []},
+        }
+
+
+def test_insufficient_history_symbol_matures_via_maintenance(
+    tmp_path, pg_conn, launched, curated, monkeypatch
+):
+    """Fix 3(a): an insufficient_history symbol is otherwise never
+    re-evaluated. Night 1 onboards HOOD (a "recent IPO", insufficient).
+    Night 2, over a year later, onboards SOFI as a fresh candidate; the
+    onboarding-stage maintenance pass should have matured HOOD by then, and
+    the launched run's extra_symbols should include both."""
+    settings = _settings(tmp_path)
+    ipo_date = pd.Timestamp("2026-06-01")  # ~1 month of history as of AS_OF
+    end1 = (AS_OF + pd.Timedelta(days=1)).tz_localize(timezone.utc).to_pydatetime()
+
+    monkeypatch.setattr("rs_spy.scan.nightly._today_et", lambda: AS_OF)
+    report1 = run_nightly(
+        settings, FreshIPOClient(actives=["HOOD"], ipo_date=ipo_date, end=end1), pg_conn,
+        as_of=AS_OF, config=CFG, launch=True,
+    )
+    assert report1.onboarded == ["HOOD"]
+    onboarded1 = scan_repo.list_onboarded(pg_conn)
+    assert bool(onboarded1.loc[onboarded1.symbol == "HOOD", "insufficient_history"].item()) is True
+    assert launched == []  # HOOD is the only onboarded symbol and it's insufficient -> no active set
+
+    later = AS_OF + pd.Timedelta(days=732)  # ~2 years later, a Monday (bdate_range needs a trading day)
+    end2 = (later + pd.Timedelta(days=1)).tz_localize(timezone.utc).to_pydatetime()
+    monkeypatch.setattr("rs_spy.scan.nightly._today_et", lambda: later)
+    report2 = run_nightly(
+        settings, FreshIPOClient(actives=["SOFI"], ipo_date=ipo_date, end=end2), pg_conn,
+        as_of=later, config=CFG, launch=True,
+    )
+    onboarded2 = scan_repo.list_onboarded(pg_conn)
+    assert bool(onboarded2.loc[onboarded2.symbol == "HOOD", "insufficient_history"].item()) is False
+    assert "SOFI" in report2.onboarded
+    assert len(launched) == 1
+    from rs_spy.store import repository as repo
+
+    run = repo.get_run(pg_conn, launched[0])
+    assert set(run["config"]["extra_symbols"]) == {"HOOD", "SOFI"}

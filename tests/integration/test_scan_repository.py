@@ -75,3 +75,34 @@ def test_list_onboarded_empty_has_columns(pg_conn):
     df = scan_repo.list_onboarded(pg_conn)
     assert df.empty
     assert "insufficient_history" in df.columns
+
+
+class _FakeOutcome:
+    def __init__(self, symbol, history_start, n_daily_bars, insufficient_history):
+        self.symbol = symbol
+        self.history_start = history_start
+        self.n_daily_bars = n_daily_bars
+        self.insufficient_history = insufficient_history
+
+
+def test_update_onboarded_refreshes_history_fields_without_touching_source(pg_conn):
+    scan_repo.record_onboarded(
+        pg_conn, "HOOD", SCAN_DATE, source="most_actives_volume",
+        history_start=date(2026, 6, 1), n_daily_bars=40, insufficient_history=True,
+    )
+    scan_repo.update_onboarded(
+        pg_conn,
+        _FakeOutcome("HOOD", date(2026, 6, 1), 400, False),
+    )
+    df = scan_repo.list_onboarded(pg_conn)
+    row = df[df.symbol == "HOOD"].iloc[0]
+    assert row["n_daily_bars"] == 400
+    assert bool(row["insufficient_history"]) is False
+    assert row["onboarded_date"] == SCAN_DATE  # untouched
+    assert row["source"] == "most_actives_volume"  # untouched
+
+
+def test_update_onboarded_is_a_noop_for_an_unknown_symbol(pg_conn):
+    # must not raise even though the symbol was never onboarded
+    scan_repo.update_onboarded(pg_conn, _FakeOutcome("NOPE", None, 0, True))
+    assert scan_repo.list_onboarded(pg_conn).empty

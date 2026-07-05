@@ -31,3 +31,25 @@ def test_record_upserts_on_conflict(tmp_path):
         "SELECT status, row_count FROM fetch_manifest WHERE symbol='AAA' AND unit_key='2023'"
     ).fetchone()
     assert row == ("ok", 10)
+
+
+def test_symbols_with_error_units_finds_partial_holes(tmp_path):
+    con = connect(tmp_path / "warehouse.duckdb")
+    manifest.record(con, "AAA", "minute", "2024-03", "ok", row_count=100)
+    manifest.record(con, "AAA", "minute", "2024-04", "error", error="boom")
+    manifest.record(con, "BBB", "minute", "2024-03", "ok", row_count=100)
+    manifest.record(con, "CCC", "day", "2024", "error", error="boom")
+    out = manifest.symbols_with_error_units(con, ["AAA", "BBB", "CCC"])
+    assert out == ["AAA", "CCC"]  # BBB has no error units at all
+
+
+def test_symbols_with_error_units_respects_timespan_filter(tmp_path):
+    con = connect(tmp_path / "warehouse.duckdb")
+    manifest.record(con, "AAA", "day", "2024", "error", error="boom")
+    assert manifest.symbols_with_error_units(con, ["AAA"], timespans=("minute",)) == []
+    assert manifest.symbols_with_error_units(con, ["AAA"], timespans=("day",)) == ["AAA"]
+
+
+def test_symbols_with_error_units_empty_symbols_list(tmp_path):
+    con = connect(tmp_path / "warehouse.duckdb")
+    assert manifest.symbols_with_error_units(con, []) == []

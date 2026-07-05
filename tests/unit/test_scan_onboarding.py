@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from rs_spy.data import manifest
 from rs_spy.data.alpaca_client import BAR_COLUMNS
 from rs_spy.scan.bars import connect_scan
 from rs_spy.scan.onboarding import (
@@ -111,3 +112,47 @@ def test_failed_fetches_produce_zero_bar_outcome_not_a_crash():
     # counts tell the caller NOT to record this symbol as onboarded
     out = onboard_symbol(con, BrokenClient(), "DOWN", END, years=1)
     assert out.n_daily_bars == 0 and out.n_minute_bars == 0
+
+
+class FlakyOneMonthClient(FakeClient):
+    """Like FakeClient, but minute backfill fails for exactly one calendar
+    month (a partial-hole outage) unless/until `healed`."""
+
+    def __init__(self, history_days=400, fail_month="2026-05"):
+        super().__init__(history_days=history_days)
+        self.fail_month = fail_month
+        self.healed = False
+
+    def fetch_bars(self, symbols, timespan, start, end):
+        unit_key = f"{start.year}-{start.month:02d}"
+        if timespan == "minute" and unit_key == self.fail_month and not self.healed:
+            raise ConnectionError("simulated month outage")
+        return super().fetch_bars(symbols, timespan, start, end)
+
+
+def test_symbols_with_error_units_detects_and_resume_run_repairs_partial_hole():
+    """T6 resume-path test: a partially-failed minute backfill (n_minute_bars
+    > 0 overall, but one month unit landed 'error') leaves a permanent hole
+    unless something retries it. manifest.symbols_with_error_units detects
+    the hole, and re-running onboard_symbol -- already resumable, per its
+    docstring -- repairs it once the client heals: the error unit flips to
+    'ok' and the hole disappears."""
+    con = connect_scan(Path(":memory:"))
+    client = FlakyOneMonthClient(history_days=400, fail_month="2026-05")
+
+    out1 = onboard_symbol(con, client, "HOOD", END, years=1)
+    assert out1.n_minute_bars > 0  # the other months landed fine
+    assert manifest.symbols_with_error_units(con, ["HOOD"]) == ["HOOD"]
+    assert con.execute(
+        "SELECT status FROM fetch_manifest "
+        "WHERE symbol='HOOD' AND timespan='minute' AND unit_key='2026-05'"
+    ).fetchone() == ("error",)
+
+    client.healed = True  # the client "now succeeds" for that month
+    out2 = onboard_symbol(con, client, "HOOD", END, years=1)
+    assert out2.n_minute_bars > out1.n_minute_bars  # the hole's rows landed
+    assert manifest.symbols_with_error_units(con, ["HOOD"]) == []
+    assert con.execute(
+        "SELECT status FROM fetch_manifest "
+        "WHERE symbol='HOOD' AND timespan='minute' AND unit_key='2026-05'"
+    ).fetchone() == ("ok",)

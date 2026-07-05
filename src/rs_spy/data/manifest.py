@@ -56,3 +56,28 @@ def pending_symbols(
     ).fetchall()
     done = {r[0] for r in rows}
     return [s for s in symbols if s not in done]
+
+
+def symbols_with_error_units(
+    con: duckdb.DuckDBPyConnection,
+    symbols: list[str],
+    timespans: tuple[str, ...] = ("day", "minute"),
+) -> list[str]:
+    """Symbols in `symbols` with at least one 'error' fetch_manifest unit in
+    any of `timespans` -- a partial backfill hole (e.g. one failed minute-month
+    chunk out of an otherwise-successful onboarding) that a maintenance re-run
+    should retry. Order-preserving."""
+    if not symbols:
+        return []
+    placeholders = ",".join(["?"] * len(symbols))
+    timespan_placeholders = ",".join(["?"] * len(timespans))
+    rows = con.execute(
+        f"""
+        SELECT DISTINCT symbol FROM fetch_manifest
+        WHERE status = 'error' AND timespan IN ({timespan_placeholders})
+          AND symbol IN ({placeholders})
+        """,
+        [*timespans, *symbols],
+    ).fetchall()
+    hit = {r[0] for r in rows}
+    return [s for s in symbols if s in hit]

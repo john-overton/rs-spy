@@ -125,6 +125,27 @@ def record_onboarded(
     return inserted
 
 
+def update_onboarded(conn: psycopg.Connection, outcome) -> None:
+    """Update n_daily_bars/history_start/insufficient_history for an existing
+    onboarded_symbols row from a fresh `OnboardingOutcome` (the nightly
+    maintenance pass repairing an insufficient-history symbol that has since
+    matured, or a partial-backfill hole). `source`/`onboarded_date` are left
+    untouched -- this call never re-attributes how/when a symbol first
+    entered. A no-op (0 rows) if `outcome.symbol` isn't onboarded yet."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE onboarded_symbols SET n_daily_bars=%s, history_start=%s, "
+            "insufficient_history=%s WHERE symbol=%s",
+            (
+                outcome.n_daily_bars,
+                outcome.history_start,
+                outcome.insufficient_history,
+                outcome.symbol,
+            ),
+        )
+    conn.commit()
+
+
 def list_onboarded(conn: psycopg.Connection) -> pd.DataFrame:
     with conn.cursor() as cur:
         cur.execute(

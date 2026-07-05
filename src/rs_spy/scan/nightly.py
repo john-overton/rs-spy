@@ -1,10 +1,17 @@
-"""Nightly discovery orchestration: screener -> refresh -> scan -> record -> onboard -> re-run.
+"""Nightly discovery orchestration: screener -> refresh -> scan -> record ->
+onboard (new candidates + maintenance) -> re-run.
 
 Each stage is isolated: a screener failure never blocks the scan snapshot, one
 symbol's failed onboarding never blocks the others, and every failure lands in
 NightlyReport.errors instead of killing the job. The scan itself refusing
 (ScanCoverageError -- holiday/outage) DOES propagate: no snapshot should exist
 for such a night.
+
+The onboarding stage also runs a bounded maintenance pass (`_run_maintenance`)
+over already-onboarded symbols before considering new candidates: it
+re-evaluates `insufficient_history` symbols (so a recent IPO eventually
+matures instead of being excluded forever) and retries any partial minute-
+backfill holes (see scan/onboarding.py's docstring for the mechanism).
 
 The screener-capture stage runs FIRST, before the (15-45min) refresh+scan, so
 a slow or failed refresh can never cost the day's irreplaceable snapshot.
@@ -30,6 +37,7 @@ from datetime import timezone
 import pandas as pd
 
 from rs_spy.backtest.engine_m5 import BacktestConfigM5
+from rs_spy.data import manifest
 from rs_spy.data.warehouse import connect
 from rs_spy.jobs.launch import launch_run
 from rs_spy.jobs.runner import _git_sha
@@ -124,19 +132,54 @@ def run_nightly(
     result.evaluated.to_parquet(artifact_dir / f"{scan_date}.parquet")
     report.scan_saved = True
 
-    # 3) onboarding (isolated per symbol) + tagged re-run. Skipped entirely
-    #    for a backdated run -- see module docstring.
-    if onboard and not is_backdated and snapshots and snapshots.get("most_actives_volume"):
+    # 3) onboarding + maintenance (isolated per symbol) + tagged re-run.
+    #    Skipped entirely for a backdated run -- see module docstring.
+    if onboard and not is_backdated:
         _run_onboarding(
-            settings, client, pg_conn, snapshots["most_actives_volume"],
-            result, end, scan_date, report, top_n=top_n, launch=launch,
+            settings, client, pg_conn, snapshots, result, end, scan_date, report,
+            top_n=top_n, launch=launch,
         )
     return report
 
 
 def _run_onboarding(
-    settings, client, pg_conn, actives_payload, result, end, scan_date, report,
+    settings, client, pg_conn, snapshots, result, end, scan_date, report,
     *, top_n: int, launch: bool,
+) -> None:
+    try:
+        wh_con = connect(settings.resolved_warehouse_path())  # MAIN warehouse, read-write
+    except Exception as exc:  # noqa: BLE001 -- e.g. another writer holds it; retry next night
+        report.errors.append(f"onboarding: warehouse unavailable: {exc}")
+        return
+    try:
+        _run_maintenance(wh_con, client, pg_conn, end, report)
+        actives_payload = (snapshots or {}).get("most_actives_volume")
+        if actives_payload:
+            _onboard_new_candidates(
+                settings, client, wh_con, pg_conn, actives_payload, result, end, scan_date, report,
+                top_n=top_n,
+            )
+    finally:
+        wh_con.close()
+    if not (launch and report.onboarded):
+        return
+
+    # cumulative sufficient-history set -> one tagged run over curated + onboarded
+    onboarded = scan_repo.list_onboarded(pg_conn)
+    active = sorted(onboarded.loc[~onboarded["insufficient_history"], "symbol"])
+    if not active:
+        return
+    cfg = BacktestConfigM5(extra_symbols=tuple(active))
+    run_id = repo.create_run(
+        pg_conn, cfg, label=f"onboarding-{scan_date}", git_sha=_git_sha()
+    )
+    launch_run(run_id)
+    report.launched_run_id = str(run_id)
+
+
+def _onboard_new_candidates(
+    settings, client, wh_con, pg_conn, actives_payload, result, end, scan_date, report,
+    *, top_n: int,
 ) -> None:
     universe = load_universe(settings.config_dir / "universe.yaml")
     already = scan_repo.list_onboarded(pg_conn)
@@ -151,43 +194,51 @@ def _run_onboarding(
         return
 
     newly: list[str] = []
-    try:
-        wh_con = connect(settings.resolved_warehouse_path())  # MAIN warehouse, read-write
-    except Exception as exc:  # noqa: BLE001 -- e.g. another writer holds it; retry next night
-        report.errors.append(f"onboarding: warehouse unavailable: {exc}")
-        return
-    try:
-        for sym in candidates:
-            try:
-                outcome = onboard_symbol(wh_con, client, sym, end)
-            except Exception as exc:  # noqa: BLE001 -- per-symbol isolation
-                logger.exception("onboarding %s failed", sym)
-                report.errors.append(f"onboard {sym}: {exc}")
-                continue
-            if outcome.n_daily_bars == 0 or outcome.n_minute_bars == 0:
-                report.errors.append(f"onboard {sym}: backfill incomplete, will retry")
-                continue
-            scan_repo.record_onboarded(
-                pg_conn, sym, scan_date, source="most_actives_volume",
-                history_start=outcome.history_start,
-                n_daily_bars=outcome.n_daily_bars,
-                insufficient_history=outcome.insufficient_history,
-            )
-            newly.append(sym)
-    finally:
-        wh_con.close()
+    for sym in candidates:
+        try:
+            outcome = onboard_symbol(wh_con, client, sym, end)
+        except Exception as exc:  # noqa: BLE001 -- per-symbol isolation
+            logger.exception("onboarding %s failed", sym)
+            report.errors.append(f"onboard {sym}: {exc}")
+            continue
+        if outcome.n_daily_bars == 0 or outcome.n_minute_bars == 0:
+            report.errors.append(f"onboard {sym}: backfill incomplete, will retry")
+            continue
+        scan_repo.record_onboarded(
+            pg_conn, sym, scan_date, source="most_actives_volume",
+            history_start=outcome.history_start,
+            n_daily_bars=outcome.n_daily_bars,
+            insufficient_history=outcome.insufficient_history,
+        )
+        newly.append(sym)
     report.onboarded = newly
-    if not (launch and newly):
-        return
 
-    # cumulative sufficient-history set -> one tagged run over curated + onboarded
+
+def _run_maintenance(wh_con, client, pg_conn, end, report) -> None:
+    """Repair the onboarding lifecycle's two one-way ratchets, reusing
+    `onboard_symbol` (already resumable: 'error' manifest units re-fetch,
+    'ok'/'empty' units no-op):
+
+    (a) `insufficient_history` symbols are otherwise never re-evaluated as
+        they mature (e.g. a recent IPO crossing MIN_HISTORY_DAYS).
+    (b) a partially-failed minute backfill (n_minute_bars > 0 but some month
+        units landed 'error') is otherwise never retried, leaving a
+        permanent hole.
+
+    Bounded and isolated per symbol: one failure lands in `report.errors`
+    and does not block the rest of the pass or the rest of the night.
+    """
     onboarded = scan_repo.list_onboarded(pg_conn)
-    active = sorted(onboarded.loc[~onboarded["insufficient_history"], "symbol"])
-    if not active:
+    if onboarded.empty:
         return
-    cfg = BacktestConfigM5(extra_symbols=tuple(active))
-    run_id = repo.create_run(
-        pg_conn, cfg, label=f"onboarding-{scan_date}", git_sha=_git_sha()
-    )
-    launch_run(run_id)
-    report.launched_run_id = str(run_id)
+    insufficient = set(onboarded.loc[onboarded["insufficient_history"], "symbol"])
+    sufficient = list(onboarded.loc[~onboarded["insufficient_history"], "symbol"])
+    holes = set(manifest.symbols_with_error_units(wh_con, sufficient))
+    for sym in sorted(insufficient | holes):
+        try:
+            outcome = onboard_symbol(wh_con, client, sym, end)
+        except Exception as exc:  # noqa: BLE001 -- per-symbol isolation
+            logger.exception("onboarding maintenance %s failed", sym)
+            report.errors.append(f"maintenance {sym}: {exc}")
+            continue
+        scan_repo.update_onboarded(pg_conn, outcome)
