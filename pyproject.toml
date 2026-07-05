@@ -27,6 +27,9 @@ dev = [
 universe = [
     "yfinance>=0.2",
 ]
+ui = [
+    "streamlit>=1.40",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
