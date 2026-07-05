@@ -147,3 +147,54 @@ def test_compare_page_renders_side_by_side_metrics(monkeypatch):
     at.run()
     assert not at.exception
     assert len(at.dataframe) >= 1   # the metrics comparison table
+
+
+def test_compare_page_disambiguates_duplicate_labels(monkeypatch):
+    rid_a = "11111111-1111-1111-1111-111111111111"
+    rid_b = "22222222-2222-2222-2222-222222222222"
+    runs = pd.DataFrame([
+        {"run_id": rid_a, "label": "baseline", "status": "succeeded",
+         "created_at": pd.Timestamp("2026-07-05 10:00"),
+         "finished_at": pd.Timestamp("2026-07-05 10:20"),
+         "n_trades": 13, "profit_factor": 3.71, "total_pnl": 753.0},
+        {"run_id": rid_b, "label": "baseline", "status": "succeeded",
+         "created_at": pd.Timestamp("2026-07-05 11:00"),
+         "finished_at": pd.Timestamp("2026-07-05 11:20"),
+         "n_trades": 7, "profit_factor": 1.9, "total_pnl": 120.0},
+    ])
+    details = {
+        rid_a: dict(_detail_fixture(), run_id=rid_a,
+                    metrics={"n_trades": 13, "total_pnl": 753.0}),
+        rid_b: dict(_detail_fixture(), run_id=rid_b,
+                    metrics={"n_trades": 7, "total_pnl": 120.0}),
+    }
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "runs_df", lambda conn, limit=200: runs)
+    monkeypatch.setattr(data, "run_detail", lambda conn, rid: details[rid])
+    monkeypatch.setattr(data, "equity_series", lambda conn, rid: None)
+    at = AppTest.from_function(_run_compare_page)
+    at.run()
+    options = at.multiselect(key="compare_runs").options
+    assert options == ["baseline (11111111)", "baseline (22222222)"]
+    at.multiselect(key="compare_runs").set_value(list(options))
+    at.run()
+    assert not at.exception
+    table = at.dataframe[0].value
+    assert table.shape[1] == 2   # both runs present as separate columns
+
+
+def test_compare_page_skips_zero_start_equity(monkeypatch):
+    runs = _runs_fixture()
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "runs_df", lambda conn, limit=200: runs)
+    monkeypatch.setattr(data, "run_detail", lambda conn, rid: _detail_fixture())
+    monkeypatch.setattr(data, "equity_series", lambda conn, rid: pd.Series(
+        [0.0, 220.0], index=pd.date_range("2026-07-01", periods=2, tz="UTC")))
+    at = AppTest.from_function(_run_compare_page)
+    at.run()
+    at.multiselect(key="compare_runs").set_value(["baseline"])
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe) >= 1   # metrics table renders; zero-start curve skipped
+    # no chart rendered: rebasing a zero-start curve would produce inf/nan
+    assert len(at.get("vega_lite_chart")) == 0

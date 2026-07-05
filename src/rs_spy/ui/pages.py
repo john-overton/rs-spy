@@ -136,20 +136,26 @@ def compare_page() -> None:
     if done.empty:
         st.info("No completed runs to compare yet.")
         return
-    labels = done["label"].fillna(done["run_id"].astype(str)).tolist()
-    picked = st.multiselect("Runs to compare", labels, key="compare_runs")
+    labels = done["label"].fillna(done["run_id"].astype(str))
+    # labels are not unique in the store — disambiguate duplicates with a run_id prefix
+    dup = labels.duplicated(keep=False)
+    rid_by_display = {
+        (f"{lbl} ({str(rid)[:8]})" if is_dup else lbl): rid
+        for lbl, rid, is_dup in zip(labels, done["run_id"], dup)
+    }
+    picked = st.multiselect("Runs to compare", list(rid_by_display), key="compare_runs")
     if not picked:
         return
-    chosen = done[done["label"].isin(picked)]
 
     cols = {}
     curves = {}
-    for _, row in chosen.iterrows():
-        run = data.run_detail(conn, row["run_id"]) or {}
-        cols[row["label"]] = run.get("metrics") or {}
-        eq = data.equity_series(conn, row["run_id"])
-        if eq is not None and len(eq):
-            curves[row["label"]] = eq / eq.iloc[0] * 100.0  # rebased to 100
+    for name in picked:
+        run_id = rid_by_display[name]
+        run = data.run_detail(conn, run_id) or {}
+        cols[name] = run.get("metrics") or {}
+        eq = data.equity_series(conn, run_id)
+        if eq is not None and len(eq) and eq.iloc[0]:
+            curves[name] = eq / eq.iloc[0] * 100.0  # rebased to 100
 
     st.dataframe(pd.DataFrame(cols))
     if curves:
