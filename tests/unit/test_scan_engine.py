@@ -96,6 +96,22 @@ def test_reit_trust_names_are_not_blocked_but_etf_issuers_are():
     assert ev.loc["WTS.WS", "first_fail"] == "listing"  # warrant suffix
 
 
+def test_issuer_named_common_stocks_pass_the_listing_gate():
+    # QQQ's issuer is Invesco, so a future edit could plausibly add "Invesco"
+    # (or "WisdomTree") to DEFAULT_NAME_BLOCKLIST -- which would silently kill
+    # the issuers' own common stocks (IVZ, WT). ETF exclusion must come from
+    # the ETF-word patterns, pure-ETF issuer brands, and the symbol denylist,
+    # NOT from asset-manager company names.
+    assets = _assets([
+        _asset_row("IVZ", name="Invesco Ltd."),
+        _asset_row("WT", name="WisdomTree Investments, Inc."),
+    ])
+    metrics = _metrics({"IVZ": GOOD, "WT": GOOD})
+    ev, _ = apply_gates(assets, metrics, CFG)
+    assert ev.loc["IVZ", "passed"] and ev.loc["IVZ", "first_fail"] is None
+    assert ev.loc["WT", "passed"] and ev.loc["WT", "first_fail"] is None
+
+
 def test_symbol_missing_from_metrics_fails_coverage_not_a_crash():
     assets = _assets([_asset_row("NEWIPO")])
     ev, funnel = apply_gates(assets, _metrics({}), CFG)

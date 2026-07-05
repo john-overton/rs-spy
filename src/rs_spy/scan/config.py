@@ -54,6 +54,9 @@ class ScanConfig:
     name_blocklist: tuple = DEFAULT_NAME_BLOCKLIST
     symbol_denylist: frozenset = DEFAULT_SYMBOL_DENYLIST
     symbol_suffix_blocklist: tuple = DEFAULT_SYMBOL_SUFFIX_BLOCKLIST
+    # Not read by apply_gates (the per-symbol coverage gate is n_bars >=
+    # adv_window); consumed by run_universe_scan's universe-level coverage
+    # refusal (Task 4).
     min_coverage_fraction: float = 0.80
 
     @classmethod
