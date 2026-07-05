@@ -49,7 +49,7 @@ def save_scan(conn: psycopg.Connection, scan_date, evaluated: pd.DataFrame, funn
                             _null_if_nan(row["last_close"]),
                             _null_if_nan(row["adv_shares"]),
                             _null_if_nan(row["adv_dollars"]),
-                            int(row["n_bars"]),
+                            None if pd.isna(row["n_bars"]) else int(row["n_bars"]),
                             bool(row["passed"]),
                             _null_if_nan(row["first_fail"]),
                         )

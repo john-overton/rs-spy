@@ -9,6 +9,8 @@ SCAN_DATE = date(2026, 7, 2)
 
 
 def _evaluated():
+    # BBB mirrors the real apply_gates left-join shape: an asset with zero
+    # cached daily bars has NaN for ALL metric columns, n_bars included.
     df = pd.DataFrame(
         {
             "symbol": ["AAA", "BBB"],
@@ -18,7 +20,7 @@ def _evaluated():
             "last_close": [50.0, float("nan")],
             "adv_shares": [100_000.0, float("nan")],
             "adv_dollars": [5_000_000.0, float("nan")],
-            "n_bars": [20, 0],
+            "n_bars": [20.0, float("nan")],
             "passed": [True, False],
             "first_fail": [None, "coverage"],
         }
@@ -40,6 +42,7 @@ def test_save_scan_roundtrip_and_rerun_is_convergent(pg_conn):
     # NaN metrics stored as NULL, first_fail None round-trips
     bbb = df[df.symbol == "BBB"].iloc[0]
     assert bbb["last_close"] is None or pd.isna(bbb["last_close"])
+    assert bbb["n_bars"] is None or pd.isna(bbb["n_bars"])  # NaN n_bars -> NULL
     assert bbb["first_fail"] == "coverage"
 
 
