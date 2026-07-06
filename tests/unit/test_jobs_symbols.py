@@ -1,8 +1,13 @@
-"""jobs.runner._trade_symbols: curated + extra_symbols merge."""
+"""jobs.runner._trade_symbols: curated + extra_symbols merge.
+
+Also _load_symbols: the bar-loading set for a run, which must be cohort-sized
+(benchmarks + the trade list) rather than the whole universe file, or a
+~125-symbol M10 cohort job would load bars for all ~500 universe_500.yaml
+symbols."""
 import pytest
 
 from rs_spy.backtest.engine_m5 import BacktestConfigM5
-from rs_spy.jobs.runner import _trade_symbols
+from rs_spy.jobs.runner import _load_symbols, _trade_symbols
 from rs_spy.universe import BenchmarkSpec, SymbolSpec, Universe
 
 UNIVERSE = Universe(
@@ -54,3 +59,22 @@ def test_override_with_unknown_symbol_raises(universe):
 
 def test_empty_override_keeps_existing_behavior(universe):
     assert _trade_symbols(universe, BacktestConfigM5()) == universe.trade_symbols
+
+
+def test_load_symbols_default_path_matches_benchmarks_plus_curated(universe):
+    trade_symbols = _trade_symbols(universe, BacktestConfigM5())
+    assert _load_symbols(universe, trade_symbols) == ["SPY", "QQQ", "AAPL", "MSFT", "JPM"]
+
+
+def test_load_symbols_cohort_override_excludes_rest_of_universe(universe):
+    cfg = BacktestConfigM5(trade_symbols_override=("AAPL", "MSFT"))
+    trade_symbols = _trade_symbols(universe, cfg)
+    load_symbols = _load_symbols(universe, trade_symbols)
+    assert load_symbols == ["SPY", "QQQ", "AAPL", "MSFT"]
+    assert "JPM" not in load_symbols  # cohort-sized, not the whole universe file
+
+
+def test_load_symbols_dedupes_benchmarks_appearing_in_trade_symbols(universe):
+    # extra_symbols overlapping a benchmark is defensive, but the loaded set
+    # must still be de-duplicated and order-preserving.
+    assert _load_symbols(universe, ["SPY", "AAPL"]) == ["SPY", "QQQ", "AAPL"]

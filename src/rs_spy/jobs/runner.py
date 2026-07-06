@@ -62,6 +62,18 @@ def _trade_symbols(universe, config: BacktestConfigM5) -> list[str]:
     return [*universe.trade_symbols, *extra]
 
 
+def _load_symbols(universe, trade_symbols: list[str]) -> list[str]:
+    """Bars to load for this run: benchmarks + the trade list (de-duplicated,
+    order-preserving) -- deliberately NOT universe.all_symbols. all_symbols is
+    the whole universe FILE's roster (benchmarks + every curated symbol), so
+    with universe_500.yaml every M10 cohort job (a ~125-symbol
+    trade_symbols_override) would load M1+M5+D1 bars for all ~500 symbols
+    instead of its own cohort (~15-20 GB/process). On the default (non-cohort)
+    path trade_symbols already equals universe.trade_symbols (+ extra_symbols),
+    so this reproduces the old universe.all_symbols-based set exactly."""
+    return list(dict.fromkeys([*universe.benchmark_symbols, *trade_symbols]))
+
+
 def run_job(
     run_id: uuid.UUID | None = None,
     config: BacktestConfigM5 | None = None,
@@ -110,7 +122,7 @@ def _execute_backtest(config: BacktestConfigM5):
     con = connect(warehouse_path, read_only=True)
     try:
         trade_symbols = _trade_symbols(universe, config)
-        load_symbols = list(dict.fromkeys([*universe.all_symbols, *trade_symbols]))
+        load_symbols = _load_symbols(universe, trade_symbols)
         all_m1 = load_universe_m1_bars(con, load_symbols)
         all_m5 = load_universe_m5_bars(con, load_symbols)
         all_d1 = load_universe_daily_bars(con, load_symbols)
