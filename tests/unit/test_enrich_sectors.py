@@ -32,3 +32,18 @@ def test_sectors_yaml_doc_is_sorted_and_carries_the_source_note():
     doc = enrich.sectors_yaml_doc({"B": "X", "A": "Y"}, source_note="yfinance 2026-07-05")
     assert doc["_source"] == "yfinance 2026-07-05"
     assert list(doc["sectors"].keys()) == ["A", "B"]
+
+
+def test_make_lookup_direct_hit():
+    fetch_sector = enrich.make_lookup({"HOOD": "Financial Services"})
+    assert fetch_sector("HOOD") == "Financial Services"
+
+
+def test_make_lookup_dot_to_slash_fallback():
+    fetch_sector = enrich.make_lookup({"BRK/B": "Financial Services"})
+    assert fetch_sector("BRK.B") == "Financial Services"
+
+
+def test_make_lookup_miss_returns_none():
+    fetch_sector = enrich.make_lookup({"HOOD": "Financial Services"})
+    assert fetch_sector("NOPE") is None
