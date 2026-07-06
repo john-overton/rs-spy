@@ -234,8 +234,10 @@ def holdout_verdict(
     checks = {
         "sep_24_pos": sep_24 is not None and sep_24 > 0,
         "sep_12_pos": sep_12 is not None and sep_12 > 0,
+        # Fail-closed: an incomputable incumbent sep_24 does NOT count as
+        # beaten -- both sides must be measurable for the check to pass.
         "beats_incumbent": (
-            sep_24 is not None and (inc_24 is None or sep_24 > inc_24)
+            sep_24 is not None and inc_24 is not None and sep_24 > inc_24
         ),
         "sign_consistent": (
             sep_24 is not None

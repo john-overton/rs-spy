@@ -224,5 +224,16 @@ def test_holdout_verdict_all_checks():
     assert thin["pass"] is False and thin["checks"]["min_n_ok"] is False
 
 
+def test_holdout_verdict_fails_closed_on_incomputable_incumbent():
+    # An incumbent whose sep_24 is None must not count as beaten (fail-closed).
+    v = holdout_verdict(
+        {"sep_12": 0.001, "sep_24": 0.002, "min_state_n": 60},
+        {"sep_24": None},
+        train_sep_24=0.003,
+    )
+    assert v["pass"] is False
+    assert v["checks"]["beats_incumbent"] is False
+
+
 def test_constants():
     assert TRAIN_MIN_STATE_N == 200 and HOLDOUT_MIN_STATE_N == 50
