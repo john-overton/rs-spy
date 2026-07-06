@@ -202,6 +202,25 @@ def test_compare_page_skips_zero_start_equity(monkeypatch):
     assert len(at.get("vega_lite_chart")) == 0
 
 
+def test_compare_page_skips_nan_start_equity(monkeypatch):
+    # NaN is truthy under Python's `if x:` -- a curve that starts with NaN
+    # (e.g. a cohort curve before back-fill) must not slip past the "skip
+    # degenerate start" guard the same way a zero-start curve is skipped.
+    runs = _runs_fixture()
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "runs_df", lambda conn, limit=200: runs)
+    monkeypatch.setattr(data, "run_detail", lambda conn, rid: _detail_fixture())
+    monkeypatch.setattr(data, "equity_series", lambda conn, rid: pd.Series(
+        [float("nan"), 220.0], index=pd.date_range("2026-07-01", periods=2, tz="UTC")))
+    at = AppTest.from_function(_run_compare_page)
+    at.run()
+    at.multiselect(key="compare_runs").set_value(["baseline"])
+    at.run()
+    assert not at.exception
+    assert len(at.dataframe) >= 1   # metrics table renders; nan-start curve skipped
+    assert len(at.get("vega_lite_chart")) == 0
+
+
 def _run_scan_page():
     from rs_spy.ui.pages import scan_page
     scan_page()

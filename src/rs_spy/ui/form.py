@@ -25,6 +25,11 @@ def field_specs(defaults: BacktestConfigM5) -> list[dict]:
         elif isinstance(value, bool):
             spec |= {"kind": "bool"}
         elif isinstance(value, int):
+            # Latent trap: this branch fires for plain Python ints, and a
+            # future BacktestConfigM5 float field whose default happens to be
+            # written as a whole number (`= 5` instead of `= 5.0`) is a
+            # Python int too -- it would be silently classified "int" here
+            # and lose decimal coercion. Keep float defaults as `.0` literals.
             spec |= {"kind": "int"}
         elif isinstance(value, float):
             spec |= {"kind": "float"}

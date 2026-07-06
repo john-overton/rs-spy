@@ -155,7 +155,11 @@ def compare_page() -> None:
         run = data.run_detail(conn, run_id) or {}
         cols[name] = run.get("metrics") or {}
         eq = data.equity_series(conn, run_id)
-        if eq is not None and len(eq) and eq.iloc[0]:
+        # NaN is truthy under a bare `if x:`, so an explicit pd.notna check is
+        # needed alongside it -- otherwise a NaN-start curve (e.g. a cohort
+        # curve before back-fill) would slip past this "skip degenerate
+        # start" guard the same way a zero-start curve is caught.
+        if eq is not None and len(eq) and pd.notna(eq.iloc[0]) and eq.iloc[0]:
             curves[name] = eq / eq.iloc[0] * 100.0  # rebased to 100
 
     st.dataframe(pd.DataFrame(cols))
