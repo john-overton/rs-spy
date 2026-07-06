@@ -54,6 +54,10 @@ def aggregate_campaign(conn, tag: str, variant: str) -> dict:
         union = curves[0].index
         for c in curves[1:]:
             union = union.union(c.index)
+        # ffill covers gaps after a curve's start; bfill then back-fills any
+        # LEADING NaNs (a cohort curve starting later than the union) from its
+        # first real value -- an approximation (flat-lines pre-start capital
+        # rather than truly having none), fine for drawdown shape.
         equity = sum(c.reindex(union).ffill().bfill() for c in curves)
 
     trading_days = len(equity.index.normalize().unique()) if equity is not None else 0
