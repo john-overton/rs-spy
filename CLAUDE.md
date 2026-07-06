@@ -134,6 +134,10 @@ There are **no console_scripts** — everything is a standalone Typer script:
 | `python scripts/run_backtest_job.py --run-id <uuid>` | DB-native single run → Postgres (used by the UI/job runner) |
 | `python scripts/run_nightly_scan.py [--as-of DATE] [--no-onboard]` | Nightly universe scan + screener capture + most-active onboarding |
 | `streamlit run app.py` (needs `pip install -e ".[ui]"` + Postgres up) | **Backtest UI** — Runs / Configure & Run / Compare / Scan & discovery / Campaigns |
+| `python scripts/build_universe_500.py [--target 500] [--allow-unknown]` | Build `config/universe_500.yaml` (curated + scan-ranked top-up) from the latest scan snapshot |
+| `python scripts/enrich_sectors.py` | One-shot sector lookup for the 500-symbol universe (Nasdaq screener API) → `config/sectors_500.yaml` |
+| `python scripts/run_campaign_500.py --tag <tag> [--variant NAME] [--resume]` | Launch a cohort-split, multi-variant M5 backtest campaign at 500 symbols |
+| `python scripts/aggregate_campaign.py --tag <tag> --variant <name>` | Pool a campaign variant's cohort runs into one metrics view |
 
 ## Data & storage
 
@@ -153,7 +157,10 @@ There are **no console_scripts** — everything is a standalone Typer script:
   scan tables — `scan_runs`/`universe_snapshots`/`screener_snapshots`/`onboarded_symbols` — via
   `store/scan_repository.py`.
 - **Config**: `config/{universe.yaml, reference_overrides.yaml, backtest_default.yaml}`, loaded by
-  `universe.py`. `.env` holds Alpaca creds + `database_url` overrides.
+  `universe.py`. `config/universe_500.yaml` (M10, committed, generated — do not hand-edit) is the
+  500-symbol campaign universe (128 curated + 372 scan-ranked top-up); `config/sectors_500.yaml`
+  is its Nasdaq-screener-sourced sector lookup, consumed by `build_universe_500.py`. `.env` holds
+  Alpaca creds + `database_url` overrides.
 
 ## Dev workflow
 

@@ -66,6 +66,15 @@ were never wrong, only date labels.
   fraction 0.993 against the 0.80 refusal floor, and PIT spot-checks
   quantifying survivorship decay (~1y back still solid, ~2y+ back refuses on
   coverage). See "M9: nightly universe scan (discovery)" section below.
+- **M10: universe-500 expansion + backtest campaign — complete.** Built a 500-symbol
+  universe (128 curated + 372 scan-ranked top-up, Nasdaq-screener sector enrichment after
+  yfinance was hard-blocked by Yahoo) and a 4-cohort sector-stratified campaign runner, then
+  ran a 5-variant campaign (20 cohort runs) re-testing the M7.5 promoted config out of the
+  curated universe. Headline, sobering result: the `rrs_m5_window=18` promotion **inverts**
+  at 500 symbols (PF 0.86, the sweep's worst) while the spec default `window=12` wins (PF
+  1.91) — curated-universe overfitting, vindicating the tiny-sample caveat every M7.5 result
+  carried. `bias_hold_bars=1` survives (hold=2 is decisively worse, PF 0.53). Shorts remain
+  weak (PF 0.77). See "M10: universe 500 + backtest campaign" section below.
 
 ## TL;DR
 
@@ -1204,6 +1213,31 @@ rather than repeated here.
     section's "data hygiene note"). No screener data exists for any date before 2026-07-06;
     this is a real gap, not a bug, and won't backfill itself since the screener endpoints are
     real-time-only by design.
+33. **`config/universe_500.yaml`'s top-up sector labels use Nasdaq's screener vocabulary
+    ("Finance", "Health Care"), which differs from the curated universe's
+    `reference_overrides.yaml` labels ("Financials", etc.)** — near-synonym labels that mean
+    the same sector economically split `max_per_sector`'s diversification buckets across the
+    curated/top-up boundary instead of merging them, a mild loosening of the intended
+    diversification cap. Not fixed with a label-mapping table; disclosed instead (M10).
+34. **The 372 M10 top-up symbols have no earnings-blackout data** —
+    `reference_overrides.yaml`'s earnings blackout lists (already unpopulated for the
+    curated 128, limitation #3 above) obviously don't cover symbols added after the fact.
+    Any M10 campaign trade around a top-up symbol's earnings date is not protected by the
+    blackout gate the spec calls for.
+35. **M10 cohort campaigns are not a literal 500-symbol portfolio simulation.** Splitting
+    into 4 cohorts of ~125 symbols each (`backtest/campaign.py::split_cohorts`) means
+    portfolio-level constraints — max-concurrent positions, daily loss limits,
+    consecutive-stop-out halts — apply independently *per cohort*, not once across the full
+    universe, and each symbol's selection-engine ranking competition is against its ~124
+    cohort-mates, not all 499 other symbols. Right question for signal-quality/sample-size
+    (does this lever still work with more names in the mix), wrong question for "what would
+    a single real 500-symbol book have done."
+36. **The M7-style validation-study suite has not been retrofitted for `universe_file`
+    overrides.** `scripts/run_validation_studies.py` hardcodes the curated-universe load
+    path with no way to point it at `config/universe_500.yaml`; a plan-stage assumption that
+    it already supported an override was wrong. Re-running the full ablation/walk-away/RRS-
+    sensitivity/bias-confusion/time-of-day suite at 500 symbols (the natural follow-up to
+    this milestone's headline window-promotion reversal) is deferred pending that retrofit.
 
 ## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
@@ -1806,3 +1840,139 @@ deleted to keep the archive honest (`captured_at` was preserved as evidence of t
 incident). The backdated-run guard (fix-round commit `47e6f56`) now prevents recurrence.
 The screener archive therefore starts genuinely empty; the first real capture will be
 2026-07-06.
+
+## M10: universe 500 + backtest campaign
+
+A third axis of work alongside M9's discovery half and M8's presentation layer: **can the
+M7.5-promoted config's tiny-sample findings survive a 4x larger, less curated universe?**
+Spec/plan: `docs/superpowers/specs/2026-07-05-universe-500-campaign-design.md` /
+`docs/superpowers/plans/2026-07-04-m7.5-round1-round4.md` sibling plan committed alongside
+M8's (`744eddf`). Built as 6 implementer tasks (commits `ccda502..ace98c3`) plus a final
+whole-branch review (run jointly against M8, since both landed around the same time) and a
+4-commit fix round, then executed as a real campaign against real data (not just built and
+left idle, per this repo's usual pattern of closing a milestone with a real run).
+
+**What was built:**
+
+- `BacktestConfigM5.universe_file` / `trade_symbols_override` (`ccda502`) — two new
+  event-loop-only config fields, inert in the engine itself (the M5 engine still trades
+  whatever `PreparedM5` was built from); `run_backtest_job.py` and the campaign driver
+  consume them, and an override is validated against the prepared universe rather than
+  silently ignored if it names an untraded symbol.
+- `scan/universe500.py` + `scripts/build_universe_500.py` — selects the top-up 372 by
+  `adv_dollars` from the latest scan snapshot (refusing if the snapshot is >7 days stale),
+  restricted to symbols with a first daily bar on or before 2021-07-05 (5-year backtest
+  history requirement), and writes the committed `config/universe_500.yaml`
+  (128 curated + 372 top-up, `scan_date=2026-07-02`).
+- **Sector enrichment — a disclosed vendor substitution.** The plan assumed `yfinance`
+  would supply sector labels for the 372 top-up symbols; in practice yfinance is
+  **hard-blocked by Yahoo** (HTTP 401 "Invalid Crumb" / anti-scraping feature-block,
+  reproduced against the latest yfinance 1.5.1, 0/372 symbols resolved — not a transient
+  outage). `scripts/enrich_sectors.py` was rewritten (`4ba4d92`) against **Nasdaq's public
+  screener API** instead: one HTTP request via stdlib `urllib` (no new dependency) returns
+  sector labels for ~6,400 symbols; class-share tickers are translated dot-to-slash
+  (`BRK.B` -> `BRK/B`) to match Nasdaq's convention. `config/sectors_500.yaml` is the
+  committed one-shot output (`_source: nasdaq-screener 2026-07-05`); 1 symbol (`BRK.B`)
+  stays `UNKNOWN` (Nasdaq's own listing row for it is empty).
+- `backtest/campaign.py` — `VARIANTS` (baseline/w12/w24/hold2/shorts, each a
+  `dataclasses.replace` delta), `split_cohorts` (deterministic sector-stratified
+  round-robin — sorts by `(sector, symbol)` before dealing so each sector spreads across
+  all cohorts), `campaign_label_re` (exact-match `m10-{tag}-{variant}-c<digits>` pattern —
+  see the "Also fixed" bullet below for why this matters), `poll_and_launch` (detached-job
+  polling with dead-process detection + a status-recheck race guard), a duplicate-launch
+  guard, and `--resume` to reattach after a Ctrl-C or crash.
+- `backtest/aggregate.py` — pools a variant's cohort runs into one metrics view via
+  `compute_metrics`; **refuses** to pool a campaign with any missing/unfinished/failed
+  cohort run (`CampaignIncompleteError`) rather than silently understating sample size.
+  Equity across cohorts is summed on the union index with `ffill().bfill()` — a documented
+  approximation (flat-lines a cohort's pre-start capital rather than truly having none;
+  fine for drawdown shape, not a literal portfolio simulation).
+- `scripts/run_campaign_500.py` / `scripts/aggregate_campaign.py` — the CLI driver and
+  pooling entry points.
+
+**Final whole-branch review (run jointly with M8) caught 2 cross-task Criticals before
+launch** — both would have made the real campaign run either impossible or misleading:
+
+1. **Cohort jobs would have loaded all 500 symbols' bars per process** (`39aac35`) — each
+   of the 20 cohort jobs would have paid `_prepare_m5` on the full universe file instead of
+   just its own ~125-symbol cohort, an estimated 15-20 GB/process that would have OOM'd
+   long before the campaign finished (the M7.5 sweep had already OOM'd at just 130 symbols
+   in one process). Fixed so `_load_symbols` = benchmarks + the run's `trade_symbols`,
+   verified to produce identical results to the pre-fix default path on a control run.
+2. **The un-enriched, all-`UNKNOWN`-sector universe file would have silently strangled the
+   top-up selection** (`0302364`) — `max_per_sector=2` treating all 372 top-up symbols as
+   one sector would have capped the tradeable list at effectively the 128 curated symbols
+   plus 2 top-up names. `build_universe_500.py` now refuses to write a universe file with
+   >10% `UNKNOWN` sectors unless `--allow-unknown` is passed explicitly.
+
+**Also fixed in the same review round**: unanchored `LIKE` label matching in
+`find_campaign_runs` (a `baseline` query could silently pool in a `baseline-cool-w12`
+cohort's run — fixed by post-filtering every SQL hit through `campaign_label_re.fullmatch`,
+`721e22f`); `poll_and_launch` hanging forever if a job died before ever reaching
+`mark_running` (`ae24d7f`); no way to reattach to an in-flight campaign after an
+interruption (`bb5deb9`, `--resume`); and the equity-pooling `bfill` approximation was
+undocumented (`69f278e`).
+
+**Backfill.** The 372 new top-up symbols' daily + minute bars backfilled in **~2 hours**
+(the plan had budgeted a feared 12-30 hours) — the warehouse grew 3.1 -> 9.8 GB,
+141,382,373 minute rows / 627,357 daily rows / 502 symbols total, **0 manifest error
+units**. The nightly cron was paused for the duration via the `.nightly_paused` pause-file
+switch added to the cron wrapper (`a69e9f9`) and unpaused once the backfill finished.
+
+**Campaign execution.** Tag `jul05`: 4 cohorts x 5 variants = 20 cohort runs, all 20
+succeeded, `max_parallel=2` (~1.9 GB/process, comfortably under the 24 GB budget). One real
+operational incident: the first driver process was externally killed mid-run, leaving 2
+rows stuck at `status='running'` in Postgres with no process actually running them (the
+exact "stale-run" scenario M8's docs flagged as a known v1 gap) — these were re-queued
+manually and the driver relaunched detached; that relaunch was `--resume`'s first real
+use, and it correctly adopted all already-queued runs from the interrupted attempt instead
+of erroring on the duplicate guard or re-creating them.
+
+**Results** (pooled via `aggregate_campaign`, full table + reasoning in
+`docs/tuning/m7.5-tuning-matrix.md` §6 "M10 out-of-universe re-check"; raw rows in
+`docs/tuning/ledger.csv` as `m10-jul05-<variant>`):
+
+| variant | n_trades | win_rate | PF | total_pnl |
+|---|---|---|---|---|
+| baseline (w18, hold1 — the M7.5 promoted config) | 34 | 38.2% | 0.86 | -$240 |
+| w12 (spec default window) | 14 | 35.7% | 1.91 | +$438 |
+| w24 | 51 | 37.3% | 1.10 | +$257 |
+| hold2 (old bias-hold behavior) | 28 | 32.1% | 0.53 | -$760 |
+| shorts | 37 | 35.1% | 0.77 | -$439 |
+
+Reference: at 130 symbols the promoted baseline measured 13 trades / PF 3.71 / +$753 / 58%
+win rate (ledger row `r4a-w18-t1-s1`).
+
+**Conclusions, with the honesty this repo's norms demand:**
+
+1. **The `rrs_m5_window=18` promotion INVERTED out-of-universe**: the M7.5 peak (w18) is
+   the 500-symbol trough, and the spec default `w12` performs best. The M7.5 promotion
+   looks curated-universe-overfit — every M7.5 result carried the "directional, tiny
+   sample" caveat explicitly, and this re-check vindicates having kept that caveat rather
+   than treating w18 as settled. No config default has been changed as a result of this
+   finding; it is recorded as a finding pending a decision, not acted on unilaterally.
+2. **The `bias_hold_bars=1` promotion SURVIVES**: `hold2` (the old default) is decisively
+   worse (PF 0.53 vs baseline's 0.86) under the identical w18 window — the opposite
+   direction from the window result, i.e. this is not a blanket "everything M7.5 promoted
+   was wrong" story.
+3. **Shorts remain weak at 500** (PF 0.77), consistent with M7's ablation (5/6 short trades
+   lost) and the M7.5 study suite (shorts weak in every gate-ablation bucket) — continued,
+   now larger-sample evidence for deprioritizing the short algo rather than tuning it.
+4. **Interpretation caveats**: samples are still modest (14-51 trades, below this
+   campaign's own ≥30/≥100 readability milestones for some variants); cohort structure is a
+   real confound, not just a sample-size multiplier — each symbol now competes against ~93
+   new cohort-mates for the selection engine's per-day/per-sector slots, and portfolio-level
+   constraints (concurrency, loss limits) apply per cohort, not globally across the full
+   500 (`backtest/campaign.py` module docstring); the 372 top-up symbols have no earnings
+   blackout populated (`reference_overrides.yaml` is curated-universe-only).
+5. **DEFERRED**: the full M7-style validation-study suite (ablation, walk-away, RRS
+   sensitivity, bias confusion, time-of-day) has not been re-run at 500 symbols —
+   `scripts/run_validation_studies.py` has no universe-override support today (the
+   original plan's assumption that it did was incorrect); retrofitting it is a candidate
+   next task, recorded here as a real limitation rather than silently skipped.
+
+**Known-limitations additions from this milestone** (folded into the numbered list below,
+items 33-36): sector-vocabulary mismatch between Nasdaq's labels and the curated universe's
+labels; the earnings-blackout gap for the 372 top-up symbols; the cohort-semantics caveat
+(per-cohort, not global, portfolio constraints); and the study-suite universe-override
+retrofit still needed.
