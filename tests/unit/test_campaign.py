@@ -6,6 +6,7 @@ from rs_spy.backtest.campaign import (
     campaign_label_re,
     existing_campaign_labels,
     poll_and_launch,
+    queued_campaign_runs,
     split_cohorts,
 )
 from rs_spy.universe import SymbolSpec
@@ -132,6 +133,62 @@ def test_campaign_label_round_trips_through_ui_parse_campaign_label():
     label = f"m10-{tag}-{variant}-c{n}"
     assert campaign_label_re(tag, variant).fullmatch(label)
     assert parse_campaign_label(label) == (tag, variant, n)
+
+
+class _QueuedFakeCursor:
+    """Serves canned (run_id, label, status) rows per LIKE pattern, like
+    _FakeCursor but with run_id + status for queued_campaign_runs."""
+
+    def __init__(self, rows_by_pattern):
+        self._rows_by_pattern = rows_by_pattern
+        self.executed = []
+
+    def execute(self, sql, params):
+        self.executed.append((sql, params))
+        self._rows = self._rows_by_pattern.get(params[0], [])
+
+    def fetchall(self):
+        return self._rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _QueuedFakeConn:
+    def __init__(self, rows_by_pattern):
+        self.cur = _QueuedFakeCursor(rows_by_pattern)
+
+    def cursor(self):
+        return self.cur
+
+
+def test_queued_campaign_runs_returns_only_exact_queued_matches():
+    rid_good = uuid.uuid4()
+    rid_wrong_status = uuid.uuid4()
+    rid_spurious = uuid.uuid4()
+    conn = _QueuedFakeConn({
+        "m10-jul05-baseline-c%": [
+            {"run_id": rid_good, "label": "m10-jul05-baseline-c1"},
+            # spurious LIKE over-match on a different variant's label
+            {"run_id": rid_spurious, "label": "m10-jul05-baseline-cool-w12-c1"},
+        ],
+    })
+    out = queued_campaign_runs(conn, "jul05", ["baseline"])
+    assert out == [rid_good]
+    assert "status = 'queued'" in conn.cur.executed[0][0]
+    del rid_wrong_status  # documents intent: the SQL filters status, not this fake
+
+
+def test_queued_campaign_runs_covers_multiple_variants():
+    rid1, rid2 = uuid.uuid4(), uuid.uuid4()
+    conn = _QueuedFakeConn({
+        "m10-jul05-baseline-c%": [{"run_id": rid1, "label": "m10-jul05-baseline-c1"}],
+        "m10-jul05-w12-c%": [{"run_id": rid2, "label": "m10-jul05-w12-c1"}],
+    })
+    assert queued_campaign_runs(conn, "jul05", ["baseline", "w12"]) == [rid1, rid2]
 
 
 def test_existing_campaign_labels_post_filters_spurious_like_matches():

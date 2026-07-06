@@ -105,6 +105,27 @@ def create_campaign_runs(
     return out
 
 
+def queued_campaign_runs(conn, tag: str, variants: list[str]) -> list[uuid.UUID]:
+    """run_ids of this tag's still-queued runs across `variants` -- what
+    `--resume` hands to poll_and_launch instead of re-creating the campaign
+    (e.g. after a Ctrl-C or crash of the driver process; the runs themselves
+    are rows in Postgres and outlive the driver). Same exact-match
+    LIKE-prefetch + campaign_label_re post-filter as existing_campaign_labels."""
+    out: list[uuid.UUID] = []
+    with conn.cursor() as cur:
+        for vname in variants:
+            pattern = campaign_label_re(tag, vname)
+            cur.execute(
+                "SELECT run_id, label FROM runs WHERE label LIKE %s AND status = 'queued' "
+                "ORDER BY label",
+                (f"m10-{tag}-{vname}-c%",),
+            )
+            out.extend(
+                row["run_id"] for row in cur.fetchall() if pattern.fullmatch(row["label"])
+            )
+    return out
+
+
 def poll_and_launch(
     conn,
     run_ids: list[uuid.UUID],
