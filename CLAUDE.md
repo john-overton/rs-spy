@@ -138,6 +138,7 @@ There are **no console_scripts** — everything is a standalone Typer script:
 | `python scripts/enrich_sectors.py` | One-shot sector lookup for the 500-symbol universe (Nasdaq screener API) → `config/sectors_500.yaml` |
 | `python scripts/run_campaign_500.py --tag <tag> [--variant NAME] [--resume]` | Launch a cohort-split, multi-variant M5 backtest campaign at 500 symbols |
 | `python scripts/aggregate_campaign.py --tag <tag> --variant <name>` | Pool a campaign variant's cohort runs into one metrics view |
+| `python scripts/run_oscillator_study.py train` / `holdout --spec <name>` | M11 Phase 1 cycle-oscillator skill study — train sweep (24 candidates) / single-shot holdout gate |
 
 ## Data & storage
 
