@@ -114,11 +114,23 @@ def poll_and_launch(
     launch=launch_run,
     sleep=time.sleep,
     get_run=repo.get_run,
+    mark_failed=repo.mark_failed,
 ) -> dict[uuid.UUID, str]:
     """Launch queued runs FIFO, keeping <= max_parallel non-terminal at once;
-    poll until all are terminal. launch/sleep/get_run injectable for tests."""
+    poll until all are terminal. launch/sleep/get_run/mark_failed injectable
+    for tests.
+
+    A detached job process can die before it ever calls repo.mark_running
+    (bad env, Postgres unreachable) -- runner.run_job only marks 'failed' for
+    errors inside its own execution, so that run's status row stays 'queued'
+    forever and this loop would otherwise wait on it indefinitely. launch()
+    returns the subprocess.Popen; each poll also checks whether a still-
+    non-terminal run's process has already exited (`popen.poll() is not
+    None`) and, if so, calls mark_failed itself and treats the run as
+    terminal -- freeing the slot instead of hanging."""
     pending = list(run_ids)
     live: list[uuid.UUID] = []
+    popens: dict[uuid.UUID, object] = {}
     final: dict[uuid.UUID, str] = {}
     while pending or live:
         still_live = []
@@ -126,12 +138,21 @@ def poll_and_launch(
             status = (get_run(conn, rid) or {}).get("status", "failed")
             if status in TERMINAL:
                 final[rid] = status
-            else:
-                still_live.append(rid)
+                continue
+            popen = popens.get(rid)
+            returncode = popen.poll() if popen is not None else None
+            if returncode is not None:
+                mark_failed(
+                    conn, rid,
+                    f"job process exited before reporting status (exit code {returncode})",
+                )
+                final[rid] = "failed"
+                continue
+            still_live.append(rid)
         live = still_live
         while pending and len(live) < max_parallel:
             rid = pending.pop(0)
-            launch(rid)
+            popens[rid] = launch(rid)
             live.append(rid)
         if pending or live:
             sleep(poll_seconds)

@@ -155,6 +155,41 @@ def test_existing_campaign_labels_is_per_tag_and_variant():
     assert out == ["m10-jul05-baseline-c1", "m10-jul05-baseline-c2"]
 
 
+class _FakePopen:
+    """Stands in for subprocess.Popen: poll() returns the fixed returncode."""
+
+    def __init__(self, returncode):
+        self._returncode = returncode
+
+    def poll(self):
+        return self._returncode
+
+
+def test_poll_and_launch_marks_failed_when_process_exits_before_reporting_status():
+    # A detached job process that dies before mark_running (bad env, PG
+    # unreachable) leaves its run 'queued' forever -- get_run never budges.
+    # poll_and_launch must notice the dead process itself and free the slot.
+    rid = uuid.uuid4()
+    mark_failed_calls = []
+
+    def fake_launch(r):
+        return _FakePopen(1)  # process already exited, code 1
+
+    def fake_mark_failed(conn, run_id, error):
+        mark_failed_calls.append((conn, run_id, error))
+
+    out = poll_and_launch(
+        conn="conn", run_ids=[rid], max_parallel=1, poll_seconds=0,
+        launch=fake_launch, sleep=lambda s: None,
+        get_run=lambda c, r: {"status": "queued"},
+        mark_failed=fake_mark_failed,
+    )
+    assert out[rid] == "failed"
+    assert len(mark_failed_calls) == 1
+    assert mark_failed_calls[0][1] == rid
+    assert "exit code 1" in mark_failed_calls[0][2]
+
+
 def test_poll_and_launch_reports_failed_runs_without_hanging():
     rid = uuid.uuid4()
     state = {rid: "queued"}
