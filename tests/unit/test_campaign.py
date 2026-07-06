@@ -3,6 +3,7 @@ import uuid
 
 from rs_spy.backtest.campaign import (
     VARIANTS,
+    campaign_label_re,
     existing_campaign_labels,
     poll_and_launch,
     split_cohorts,
@@ -101,6 +102,46 @@ def test_existing_campaign_labels_empty_store_returns_nothing():
     patterns = [params[0] for _, params in conn.cur.executed]
     assert patterns == ["m10-jul05-baseline-c%", "m10-jul05-w12-c%"]
     assert all("%s" in sql for sql, _ in conn.cur.executed)  # parameterized, not f-string
+
+
+def test_campaign_label_re_does_not_confuse_tags_differing_only_by_separator():
+    # LIKE's unescaped '_' wildcard would match "-" here; the regex must not.
+    pattern = campaign_label_re("jul_05", "baseline")
+    assert pattern.fullmatch("m10-jul_05-baseline-c1")
+    assert not pattern.fullmatch("m10-jul-05-baseline-c1")
+
+
+def test_campaign_label_re_does_not_confuse_variant_prefixes():
+    pattern = campaign_label_re("jul05", "baseline")
+    assert pattern.fullmatch("m10-jul05-baseline-c1")
+    assert pattern.fullmatch("m10-jul05-baseline-c12")
+    assert not pattern.fullmatch("m10-jul05-baseline2-c1")
+    # trailing 'c%' in the LIKE pre-filter would over-match this; the label's
+    # tag also merely starts the same, both must be rejected.
+    assert not pattern.fullmatch("m10-jul05-baseline-cool-w12-c1")
+
+
+def test_campaign_label_round_trips_through_ui_parse_campaign_label():
+    """Pins the cross-module label contract: campaign.py builds
+    f"m10-{tag}-{variant}-c{n}" (see create_campaign_runs); ui.data.
+    parse_campaign_label must recover the same (tag, variant, n), and
+    campaign_label_re must accept exactly that label."""
+    from rs_spy.ui.data import parse_campaign_label
+
+    tag, variant, n = "jul05", "w12", 3
+    label = f"m10-{tag}-{variant}-c{n}"
+    assert campaign_label_re(tag, variant).fullmatch(label)
+    assert parse_campaign_label(label) == (tag, variant, n)
+
+
+def test_existing_campaign_labels_post_filters_spurious_like_matches():
+    conn = _FakeConn({
+        "m10-jul05-baseline-c%": [
+            "m10-jul05-baseline-c1",
+            "m10-jul05-baseline-cool-w12-c1",  # spurious LIKE over-match
+        ],
+    })
+    assert existing_campaign_labels(conn, "jul05", ["baseline"]) == ["m10-jul05-baseline-c1"]
 
 
 def test_existing_campaign_labels_is_per_tag_and_variant():

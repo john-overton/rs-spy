@@ -56,6 +56,18 @@ def test_find_campaign_runs_queries_by_label_pattern():
     assert find_campaign_runs(_Conn(rows), "t", "baseline") == rows
 
 
+def test_find_campaign_runs_post_filters_spurious_like_matches():
+    # A real `LIKE 'm10-t-baseline-c%'` over-matches: the trailing c% wildcard
+    # also swallows a *different* variant's label, e.g. "baseline-cool-w12".
+    # find_campaign_runs must post-filter these out with the exact regex, or
+    # a differently-varianted cohort would be silently pooled in.
+    good = _runs(["succeeded"])[0]
+    spurious = {
+        "run_id": uuid.uuid4(), "label": "m10-t-baseline-cool-w12-c1", "status": "succeeded",
+    }
+    assert find_campaign_runs(_Conn([good, spurious]), "t", "baseline") == [good]
+
+
 def test_aggregate_refuses_missing_and_unfinished_campaigns():
     with pytest.raises(CampaignIncompleteError):
         aggregate_campaign(_Conn([]), "t", "baseline")

@@ -7,6 +7,7 @@ cohort, not across the whole 500 -- right for signal-quality/sample-size
 questions, not a literal portfolio simulation (see the M10 spec).
 """
 import dataclasses
+import re
 import time
 import uuid
 
@@ -42,6 +43,22 @@ def split_cohorts(symbol_specs: list[SymbolSpec], n_cohorts: int = 4) -> list[li
     return cohorts
 
 
+def campaign_label_re(tag: str, variant: str) -> re.Pattern:
+    """Exact-match pattern for one (tag, variant) campaign's cohort labels:
+    `m10-{tag}-{variant}-c<digits>`, fully anchored (use with `.fullmatch`).
+
+    The `label LIKE 'm10-{tag}-{variant}-c%'` clauses used as a cheap SQL
+    pre-filter in find_campaign_runs/existing_campaign_labels are both
+    prefix-unanchored on the trailing wildcard AND leave SQL's own `_`/`%`
+    wildcard characters unescaped if tag/variant happen to contain them --
+    so e.g. tag "jul_05" would LIKE-match a differently-tagged "jul-05" label,
+    and variant "baseline" would LIKE-match a label whose variant is really
+    "baseline-cool-w12". This regex (built with re.escape, so literal
+    underscores/dots in tag/variant stay literal) is the real, exact filter;
+    callers must post-filter LIKE results through `.fullmatch(label)`."""
+    return re.compile(rf"m10-{re.escape(tag)}-{re.escape(variant)}-c\d+$")
+
+
 def existing_campaign_labels(conn, tag: str, variants: list[str]) -> list[str]:
     """Labels of runs already created for this (tag, variant) combination.
 
@@ -53,11 +70,14 @@ def existing_campaign_labels(conn, tag: str, variants: list[str]) -> list[str]:
     found: list[str] = []
     with conn.cursor() as cur:
         for vname in variants:
+            pattern = campaign_label_re(tag, vname)
             cur.execute(
                 "SELECT label FROM runs WHERE label LIKE %s ORDER BY label",
                 (f"m10-{tag}-{vname}-c%",),
             )
-            found.extend(row["label"] for row in cur.fetchall())
+            found.extend(
+                row["label"] for row in cur.fetchall() if pattern.fullmatch(row["label"])
+            )
     return found
 
 

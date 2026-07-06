@@ -8,6 +8,7 @@ a documented approximation, fine for drawdown shape, not a portfolio sim.
 """
 import pandas as pd
 
+from rs_spy.backtest.campaign import campaign_label_re
 from rs_spy.backtest.metrics import compute_metrics
 from rs_spy.store.repository import get_equity, get_trades
 
@@ -17,12 +18,19 @@ class CampaignIncompleteError(RuntimeError):
 
 
 def find_campaign_runs(conn, tag: str, variant: str) -> list[dict]:
+    """Runs for this (tag, variant) campaign. The LIKE clause is a cheap SQL
+    pre-filter (prefix-unanchored, `_`/`%`-unescaped); rows are post-filtered
+    through campaign_label_re for the real, exact match -- see that
+    function's docstring for why (e.g. a "baseline" query must not pool in a
+    "baseline-cool-w12" cohort's run)."""
+    pattern = campaign_label_re(tag, variant)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT * FROM runs WHERE label LIKE %s ORDER BY label",
             (f"m10-{tag}-{variant}-c%",),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+    return [r for r in rows if pattern.fullmatch(r["label"])]
 
 
 def aggregate_campaign(conn, tag: str, variant: str) -> dict:
