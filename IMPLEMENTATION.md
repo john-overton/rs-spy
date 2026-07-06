@@ -75,6 +75,24 @@ were never wrong, only date labels.
   1.91) — curated-universe overfitting, vindicating the tiny-sample caveat every M7.5 result
   carried. `bias_hold_bars=1` survives (hold=2 is decisively worse, PF 0.53). Shorts remain
   weak (PF 0.77). See "M10: universe 500 + backtest campaign" section below.
+- **M11 Phase 1: cycle oscillator skill study — complete on branch
+  `m11-cycle-oscillator`, unmerged, pending user review of the holdout
+  result before any Phase 2 work starts.** A different axis again: not a
+  bigger universe or a UI, but a candidate replacement signal for the bias
+  engine's directional read. Built a modular 1OP-style two-line cycle
+  oscillator (`indicators/cycle_oscillator.py`) and a pre-committed
+  train/holdout skill study (`backtest/studies/oscillator_skill_m5.py` +
+  `scripts/run_oscillator_study.py`) that measures, rather than assumes,
+  whether any candidate has out-of-sample forward-return skill on SPY. A
+  24-candidate train sweep (2021-07→2024-12) picked `close-6-13-5`; the
+  single-shot holdout (2025-01→2026-07) **PASSED all 5 pre-committed
+  checks**, but the magnitude collapsed ~10x out of sample and two
+  supporting reads (the long-horizon sign, the trigger-composition
+  standout) did not hold up — see "M11 Phase 1: cycle oscillator skill
+  study" section below for the full numbers and the honest read of both
+  sides. Phase 2 (engine wiring behind a `bias_mode` switch + a
+  500-universe campaign re-run) is formally unlocked by the gate but not
+  started.
 
 ## TL;DR
 
@@ -1238,6 +1256,14 @@ rather than repeated here.
     it already supported an override was wrong. Re-running the full ablation/walk-away/RRS-
     sensitivity/bias-confusion/time-of-day suite at 500 symbols (the natural follow-up to
     this milestone's headline window-promotion reversal) is deferred pending that retrofit.
+37. **The bias engine's directional read is sign-wrong on 2025-2026 data, not just
+    null (M11).** M7 measured ≈zero directional skill above base rate for the 8-component
+    bias engine on the 2021-2024 window. Re-measured in-harness against the M11 oscillator
+    study's separation metric on the 2025-2026 holdout window, the incumbent's bull buckets
+    now *underperform* its bear buckets (`sep_24=-9.1e-5`, negative at all three measured
+    horizons) — a live-relevant regression finding, independent of whether the M11 oscillator
+    itself is ever wired in, since the incumbent bias engine remains the production signal
+    pending a Phase 2 decision. See "M11 Phase 1: cycle oscillator skill study" below.
 
 ## M7 pre-work: ADV-gate fix + full-universe audit (completed)
 
@@ -1976,3 +2002,177 @@ items 33-36): sector-vocabulary mismatch between Nasdaq's labels and the curated
 labels; the earnings-blackout gap for the 372 top-up symbols; the cohort-semantics caveat
 (per-cohort, not global, portfolio constraints); and the study-suite universe-override
 retrofit still needed.
+
+## M11 Phase 1: cycle oscillator skill study
+
+A different axis than M8-M10: not presentation or universe scale, but a candidate
+**replacement for the bias engine's directional read itself**. M7 measured the current
+8-component bias engine at ≈zero directional skill above base rate for SPY forward returns;
+M7.5 found real skill in the LONG trendline trigger instead, but trades only fire when a
+skilled trigger lands inside an unskilled bias window. The user's OneOption-sourced thesis:
+a 1OP-style market-cycle oscillator (two lines crossing around zero, MACD family, on SPY)
+might be the missing "which way and when" layer. Spec:
+`docs/superpowers/specs/2026-07-05-cycle-oscillator-design.md`; plan:
+`docs/superpowers/plans/2026-07-05-m11-cycle-oscillator.md`. Built on branch
+`m11-cycle-oscillator` (commits `f005e9b..cf8700d`), **not merged to main** — the milestone
+is deliberately structured as "measure first, gate second" with a pre-committed hard holdout
+gate, and Phase 2 (engine wiring) only starts if the user reviews the holdout result below and
+approves it.
+
+**What was built:**
+
+- `indicators/cycle_oscillator.py` — a pure, modular two-line oscillator (`OscSpec`:
+  `input_mode`/`fast`/`slow`/`signal`). Two input families: `close` (PPO — `100 *
+  (EMA(close,fast) - EMA(close,slow)) / EMA(close,slow)`, percentage-normalized so 2021 and
+  2026 price levels are comparable) and `vwap_dev` (fast EMA of pct deviation from session
+  VWAP — a price+volume composite; `slow` is formula-unused bookkeeping for that family, kept
+  only for uniform grid labeling). Both: `signal_line = EMA(fast_line, signal)`, `histogram =
+  fast_line - signal_line`. Causal by construction (`adjust=False` EWMs, no backward shifts).
+  A 4-state read (`oscillator_states`): `BULL_RUN`/`BULL_EARLY`/`BEAR_EARLY`/`BEAR_RUN`
+  (fast-vs-signal × fast-vs-zero), plus `oscillator_crosses` (bull/bear/zero-up/zero-down,
+  true only on the crossing bar). Disclosed simplification: EMA state carries across session
+  boundaries (only the VWAP input itself resets daily) — the conventional way MACD-family
+  indicators run intraday.
+- `backtest/studies/oscillator_skill_m5.py` — the skill study: a fixed train/holdout split
+  (`TRAIN_END = 2025-01-01`, ≈2021-07→2024-12 train / ≈2025-01→2026-07 holdout), state- and
+  cross-conditioned forward-return tables at horizons {12, 24, 78} bars (same
+  shift/session-crossing convention as the M7.5 trigger-skill study), a **separation score**
+  (`sep_h` = n-weighted mean forward return of bull states minus bear states — the
+  pre-committed selection/gate metric), an **incumbent scorer** (`incumbent_skill` — the
+  current bias engine's bull/bear buckets scored with the identical metric, so the comparison
+  is apples-to-apples rather than citing M7's ≈0 finding from a different harness), a
+  **trigger-composition table** (M7.5 LONG trendline-trigger forward returns, conditioned on
+  the oscillator state at the trigger bar — the decision-relevant read since real entries need
+  trigger-in-window coincidence), a 24-candidate grid (`input_mode ∈ {close, vwap_dev}` ×
+  `(fast,slow) ∈ {(6,13),(9,21),(12,26),(16,36)}` × `signal ∈ {5,9,13}` — deliberately modest
+  per the user's "1OP is probably simple" guidance), `run_train_sweep` (train-only winner
+  selection: highest `sep_24` among candidates where every state has n≥200, tie-break
+  `sep_12`; structurally cannot see holdout data — the split happens inside the function, not
+  the caller), and `holdout_verdict` (the pre-committed hard gate, five checks, "no
+  exceptions").
+- `scripts/run_oscillator_study.py` — the real-data driver, `train` and `holdout --spec NAME`
+  subcommands; exit code mirrors the verdict (0 = pass, 1 = fail/no-eligible-candidate) so the
+  gate is scriptable. The holdout subcommand accepts exactly one `--spec` and refuses anything
+  else — the study cannot be re-run against a shopping list of specs on the holdout window.
+
+**Review catches (both pre-data, i.e. before any real numbers existed to bias the fix):**
+
+1. **Bar-0 spurious-cross bug** (`9560a45`) — the original `oscillator_crosses` used
+   `.shift(1).fillna(False)`, which treats bar 0's undefined prior state as "was below," so
+   every series started with a phantom `bull_cross`/`zero_up` on its first bar. Fixed to
+   compare against `NaN` directly (`above_prev == True` / `== False`, which is `False` on both
+   sides when `above_prev` is `NaN`) so an undefined prior state can never register a cross.
+2. **`min_state_n` tightened before any real data was seen** (`c9ed9b5`) — the first cut
+   summed occupancy across horizons per state (`table.groupby("state")["n"].sum()`), which
+   overcounts: three horizons of the same 200-bar state read as n=600, not the true 200-bar
+   occupancy. Changed to the minimum per-(state, horizon) cell so the eligibility floors
+   (train ≥200, holdout ≥50) bind against actual state occupancy, not an inflated horizon-summed
+   count. This makes the gate strictly harder to pass, and the change landed before the train
+   sweep was run against real warehouse data.
+3. **Fail-closed holdout verdict** (`cf8700d`) — `beats_incumbent` requires *both* the
+   winner's and the incumbent's `sep_24` to be non-`None`; an incomputable incumbent score
+   does not silently count as "beaten." (In the actual run this branch never had to bind — the
+   incumbent's holdout `sep_24` was measurable, just negative — but the fail-closed logic was
+   committed before that was known.)
+
+Test suite on this branch: 374 unit tests passing, `ruff check .` clean.
+
+**Train sweep** (2021-07→2024-12, SPY M5, 24 candidates, all eligible — every candidate
+cleared the n≥200-per-state-per-horizon floor):
+
+Winner: `close-6-13-5` (fast PPO on close) — `sep_12=1.63e-4`, `sep_24=8.34e-5`,
+`sep_78=-6.7e-5` (**negative at the long horizon**, on train, in the winning candidate).
+Runner-up family: `vwap_dev` variants (`sep_24 ≈ 6.4-6.6e-5`). Incumbent bias-engine buckets,
+scored with the identical metric on the same window: `sep_12=1.52e-4`, `sep_24=2.6e-5`,
+`sep_78=6.5e-4` (positive at all three horizons on train — the incumbent's problem shows up
+later, on holdout). Winner's LONG-trigger composition on train: triggers landing in
+`BULL_EARLY` (n=68) had mean `fwd_78=2.18e-3` vs. `ALL` triggers' `1.0e-3` (≈2x); triggers in
+`BEAR_RUN` (n=5, too small to weigh) were negative at 12/78 bars. Full table:
+`reports/tuning/oscillator_skill_train.csv`.
+
+**Holdout, single shot** (2025-01→2026-07, spec `close-6-13-5`, per the pre-commitment that
+running it against a second spec would burn the window) — **VERDICT: PASS, all 5 checks**:
+
+| check | result |
+|---|---|
+| `sep_24_pos` | PASS (`8.6e-6 > 0`) |
+| `sep_12_pos` | PASS (`8.4e-6 > 0`) |
+| `beats_incumbent` | PASS (`8.6e-6 > -9.1e-5`) |
+| `sign_consistent` | PASS (holdout and train `sep_24` both positive) |
+| `min_n_ok` | PASS (`min_state_n=4961 ≥ 50`) |
+
+Winner: `sep_12=8.4e-6`, `sep_24=8.6e-6`, `sep_78=-1.28e-4`. Incumbent, same window:
+`sep_12=-1.55e-4`, `sep_24=-9.1e-5`, `sep_78=-4.9e-4` — **negative at all three horizons**.
+Full table: `reports/tuning/oscillator_skill_holdout.csv`.
+
+**The honest interpretation — both sides, per this repo's result-honesty norm:**
+
+1. **The gate passed exactly as pre-committed.** Positive, sign-consistent, out-of-sample
+   separation on a candidate selected purely on train data, using a metric and eligibility
+   floor that were both locked (and, for `min_state_n`, tightened) before any real numbers
+   existed. Phase 2 (a `bias_mode` config switch, engine wiring, and a 500-universe campaign
+   re-run vs. the M10 baseline rows — its own spec/plan) is formally unlocked, pending the
+   user's morning review of this section.
+2. **But the magnitude collapsed roughly 10x out of sample, and sits inside the noise floor.**
+   `sep_24` went from `8.34e-5` (train) to `8.6e-6` (holdout) — about 0.09 bps per 2-hour
+   horizon, economically thin on its own before any consideration of transaction costs,
+   trigger-coincidence rates, or position sizing. Putting a number on that noise floor (added
+   in final-branch review): SPY's ~2h return std is ≈0.5%; with overlapping 24-bar returns the
+   effective per-side sample is ≈n/24 (adjacent 24-bar windows share 23 of 24 bars and are not
+   independent draws), which gives a rough standard error for `sep_24` of ≈3e-4. The holdout
+   `sep_24` (`8.6e-6`) is ~1/40 of that SE, and even train's `8.34e-5` sits within 1 SE — by
+   this rough estimate the result is **statistically indistinguishable from zero**. Consistent
+   with that: under a pure no-skill null, this gate is estimated to pass roughly **one time in
+   three** (`sep_12` and `sep_24` are highly correlated — same state labels, overlapping
+   windows — and the "beats incumbent" check is easy to clear by chance once the incumbent
+   itself goes negative, which is exactly what happened here; see point 5 below). **The PASS is
+   weak directional evidence, not confirmation of signal.**
+3. **`sep_78` is negative in *both* windows** (`-6.7e-5` train, `-1.28e-4` holdout) — the
+   oscillator's bull/bear read inverts at the long (78-bar / ~6.5h) horizon in every window
+   measured so far. The gate never required `sep_78 > 0`; this is a real, disclosed limit on
+   how far out the signal is claimed to hold, not a threshold near-miss.
+4. **The trigger-composition standout did not replicate.** Train's `BULL_EARLY` lift (n=68,
+   `fwd_78=2.18e-3` vs. `ALL` `1.0e-3`, ≈2x) shrank to n=38, `fwd_78=5.1e-5` vs. `ALL`
+   `1.0e-3` on holdout — the specific decision-relevant read (does the oscillator's state pick
+   better trigger events than unconditioned triggers) that motivated the whole milestone did
+   not hold up on the one window it was tested against.
+5. **"Beats incumbent" is partly the incumbent going negative, not just the winner being
+   strong** — and that is itself a new finding, not previously measured: the current bias
+   engine's directional read on 2025-2026 SPY data is not merely null (M7's ≈0 finding on the
+   2021-2024 window) but **sign-wrong** — its bull buckets underperformed its bear buckets
+   out of sample. This is worth carrying into the known-limitations list below regardless of
+   what happens with the oscillator.
+6. **The pre-commitment did its job in both directions**: no threshold was shopped after
+   seeing holdout numbers (the driver enforces exactly one `--spec`), and the pass arrives
+   with its caveats attached in the same report rather than discovered later by someone
+   reading only the PASS/FAIL line.
+7. **The per-state read inverts underneath the pooled pass** (added in final-branch review).
+   On holdout, `BEAR_RUN`'s mean forward return *exceeds* `BULL_RUN`'s at both `h=12`
+   (`2.03e-4` vs. `1.59e-4`) and `h=24` (`3.33e-4` vs. `2.86e-4`) —
+   `reports/tuning/oscillator_skill_holdout.csv`. The positive pooled `sep_h` is driven by the
+   EARLY states and the n-weighting composition, not by `RUN`-state ordering. Consequence for
+   Phase 2: a naive "long only in BULL states" wiring would have selected worse bars than
+   `BEAR_RUN` bars on this holdout window; any Phase 2 design must confront the 4-state
+   composition directly, not assume bull>bear uniformly.
+8. **Grid-boundary caveat** (added in final-branch review): the winner (`close-6-13-5`) sits
+   at the fastest corner of the 24-candidate grid, and train `sep_24` increases monotonically
+   toward that corner (leaderboard in `reports/tuning/oscillator_skill_tables.md`) — the grid's
+   boundary picked the winner, not an interior optimum.
+
+**Decision tables**: the train leaderboard, winner/incumbent per-state and trigger-composition
+tables, and the holdout tables + checks + verdict are archived verbatim (with reconstructed
+sections labeled) in `reports/tuning/oscillator_skill_tables.md`.
+
+**Next step**: user review of this section and the two `docs/tuning/ledger.csv` rows
+(`m11-train-winner`, `m11-holdout-gate`); if approved, a Phase 2 spec/plan (engine wiring
+behind a `bias_mode` switch, 500-universe campaign re-run) follows as its own milestone. No
+engine code, config default, or `BacktestConfigM5` field has been touched by Phase 1 — the
+oscillator and its study are fully additive, dead code from the live system's perspective
+until Phase 2 wires them in.
+
+**Known-limitations addition from this milestone** (item 37): the current bias engine's
+directional read, previously measured as ≈zero-skill (M7, 2021-2024 window), measures as
+**sign-wrong** (bull buckets underperforming bear buckets) on the 2025-2026 holdout window
+using the M11 study's separation metric (`sep_24=-9.1e-5`) — a live-relevant finding
+independent of the oscillator's own fate, since the incumbent is still the production bias
+signal pending a Phase 2 decision.
