@@ -45,6 +45,15 @@ were never wrong, only date labels.
   promoted 12 -> 18, `bias_hold_bars=1` promoted after a robustness pass, the
   full validation-study suite re-run on the promoted baseline (gate-ablation
   monotonicity finally confirmed) — **complete**. See the M7.5 sections below.
+- **M8: backtest UI — complete.** A Streamlit app (`app.py` + `src/rs_spy/ui/`) over the
+  Postgres runs-store built in M6/M7.5: 5 pages (Runs, Configure & Run, Compare, Scan &
+  discovery, Campaigns), an out-of-process job-launch model (a run is a detached subprocess
+  polled via Postgres, never in-thread), and `st.fragment(run_every="5s")` auto-refresh —
+  329 unit tests (`AppTest` + monkeypatched data layer). A different axis of work than
+  M4-M7.5/M9 (presentation over an existing store, not new trading-system behavior); numbered
+  after M7.5 chronologically but built independently of, and merged before, M9's Task 9
+  calibration. See "M8: backtest UI" section below — includes a deliberately deferred
+  run-launch smoke (a concurrent bulk backfill held the warehouse's write lock).
 - **M9: nightly universe scan (discovery half of algo-spec 01 §4) — complete
   except Step 4 (first live nightly run with onboarding), which needs a real
   trading session and is pending the next session (Mon 2026-07-06).** Built a
@@ -1549,6 +1558,103 @@ philosophy the system is built on. Open threads, in rough priority: shorts look 
 everywhere (consider shorts_enabled=False for the headline config, or a short-side
 recalibration); lever A5 (dip-quality parameterization) if Path B is pursued further;
 universe expansion as the remaining sample-size multiplier.
+
+## M8: backtest UI
+
+A different axis of work than the M4-M7.5 trading-system milestones and M9's discovery
+half: a **presentation layer** over stores that already existed (the M6/M7.5 Postgres
+runs-store, plus M9's scan tables once those landed) — no new indicator, gate, or backtest
+behavior. Built as 8 tasks (7 implementer tasks each with its own fresh-subagent review,
+plus this closing docs+smoke task); spec/plan under `docs/superpowers/`. 329 unit tests
+(`tests/unit/test_ui_pages.py` + `test_ui_data.py` + `test_ui_form.py`, roughly), all
+`AppTest`-driven with `rs_spy.ui.data` monkeypatched — hermetic, no real Postgres needed
+to keep the main suite fast.
+
+**What was built** — `app.py` (repo root) + `src/rs_spy/ui/`:
+
+- `app.py` — `st.navigation` over 5 pages: Runs (`/runs`, default), Configure & Run
+  (`/run`), Compare (`/compare`), Scan & discovery (`/scan`), Campaigns (`/campaigns`).
+- `ui/data.py` — the only module that touches Postgres/`store/*` or launches jobs; every
+  page function calls `data.<fn>(...)` as a module attribute (never `from ui.data import
+  fn`) specifically so tests can monkeypatch it and never need a real database. Wraps
+  `store/repository.py` (`runs_df`, `run_detail`, `trades_df`, `equity_series`,
+  `config_of`) and `store/scan_repository.py` (`scan_dates`, `passing_history`,
+  `scan_funnel`, `universe_snapshot`, `onboarded_df`) for the M9 scan tables, plus
+  `campaign_groups`/`parse_campaign_label` (regex `^m10-(.+)-([A-Za-z0-9_]+)-c(\d+)$`,
+  matching M10's campaign label convention — a cross-milestone contract this task's
+  self-review explicitly checked).
+- `ui/form.py` — a pure (no `streamlit` import), unit-testable dataclass introspector:
+  `field_specs` walks `dataclasses.fields(BacktestConfigM5)` and type-dispatches to a
+  widget kind (`bool`/`int`/`float`/`choice`/`gates`/`symbols`/`str`), so the form
+  automatically tracks any future `BacktestConfigM5` field instead of needing a
+  hand-maintained list. `ADVANCED_FIELDS` (`extra_symbols`, `universe_file`,
+  `trade_symbols_override`, `disabled_gates`) split into a collapsed expander.
+- `ui/pages.py` — the render functions. Runs page: `st.fragment(run_every="5s")` wraps
+  just the table (not the whole page) so the newest-first, status-badged, headline-metric
+  list auto-refreshes without a full rerun stealing focus from anything else on the page;
+  a `limit`/`show-more` session-state counter avoids ever loading unbounded history. Run
+  detail: trades table, `st.line_chart` equity curve, metrics, gate-funnel counts, and the
+  exact stored config in a JSON expander, plus a "clone into Configure & Run" button that
+  seeds the form from `config_of(run_id)` (clone-and-tweak). Compare: 2+ succeeded runs,
+  side-by-side metrics + equity curves rebased to 100 and overlaid on one `st.line_chart`.
+  Campaigns: groups runs by the M10 label convention, and — cross-plan dependency, noted
+  in this task's self-review — calls `backtest.aggregate.aggregate_campaign` (an M10
+  artifact) to pool a variant's cohort runs, refusing (via `CampaignIncompleteError`) to
+  render a partial campaign as if it were the full sample.
+- **Job execution model**: `ui/data.create_and_launch` does `repo.create_run(status=
+  'queued')` then `jobs/launch.py::launch_run` — a **detached subprocess**
+  (`start_new_session=True`, parent does not `wait()`) running
+  `scripts/run_backtest_job.py --run-id <uuid>`, which flips the row through
+  running/succeeded/failed. The UI only ever polls Postgres; a backtest never runs
+  in-thread inside the Streamlit process (a launched run outliving a closed browser tab or
+  a Streamlit restart is the whole point, not a bug).
+
+**Deliberately out of scope** (v1, all noted in the task 8 self-review as intentional cuts,
+not oversights):
+
+- **Real-time signals / live-trading view** — this UI only ever shows *backtest* runs
+  pulled from Postgres after the fact; there is no live-market or paper-trading dashboard.
+  Deferred to a future discovery milestone (tentatively "**discovery milestone #2**" —
+  distinct from M9's discovery-of-universe work, this would be discovery-of-live-signal
+  presentation).
+- **D1 (daily-bar) backtests** — the UI's Configure & Run form only builds `BacktestConfigM5`
+  (the M5/intraday engine); the D1 walking-skeleton engine (`backtest/engine.py`) has no UI
+  path and is still CLI-only (`scripts/run_backtest_d1.py`).
+- **Study-suite triggering** — the validation-study suite (ablation, walk-away, RRS
+  sensitivity, bias confusion, time-of-day) has no Configure-&-Run-style form or launch
+  button; it remains a CLI-only workflow (`scripts/run_validation_studies.py`).
+
+**Stale-run caveat (v1, documented not automated)**: because a run is a detached
+subprocess, a hard `SIGKILL`/OOM/host-crash can leave its row stuck at `status='running'`
+forever — nothing flips it to `failed`. There is no automatic reaper in v1; `jobs/launch.py`
+documents the query a human (or a future cron) can use to flag likely-dead runs:
+```sql
+SELECT * FROM runs
+WHERE status='running' AND started_at < now() - interval '2 hours';
+```
+The UI itself shows whatever status is actually stored — it does not second-guess a
+long-`running` row.
+
+**Task 8 (this task): docs + live smoke.** Per an explicit controller deviation from the
+original plan, **the run-launch smoke was deferred rather than run in this task**: a
+long-running bulk backfill held the main DuckDB warehouse's write lock at the time, and a
+launched job opens that warehouse read-only (`engine_m5.py`'s `_prepare_m5` path) — a run
+launched under lock contention would fail for an environmental reason unrelated to the UI
+code being validated, and would leave a misleading `failed` row in the real store. The
+`create_run`+`launch_run` path is exercised by the (mocked) unit tests already, and will
+get its real end-to-end exercise for free during the **M10 campaign execution**, which
+drives the identical code path at much higher volume. What *was* run live: `streamlit run
+app.py` against the real Postgres store (port 55432), all 5 page paths (`/runs`, `/run`,
+`/compare`, `/scan`, `/campaigns`) verified to render with no exceptions — both an HTTP-200
+check against the running server and, because Streamlit's initial HTTP response is a
+static shell (the page script only executes over the app's websocket session), a
+`streamlit.testing.v1.AppTest` run of each page function directly against the same live
+store to actually execute the render code. Scan & discovery showed real M9 data: 14,021
+assets evaluated, 1,450 passed (matches M9 Task 9's calibrated funnel exactly), one scan
+date on record, zero onboarded symbols (consistent with M9 Step 4 — the first live
+nightly/onboarding run — still pending). Runs/Compare/Campaigns rendered their empty
+states cleanly (zero rows in `runs`, as expected since no run has been launched from this
+UI yet). No UX bugs found; no code changes were needed as a result of the smoke.
 
 ## M9: nightly universe scan (discovery)
 

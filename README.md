@@ -147,6 +147,22 @@ short date slice (load bars via `rs_spy.data.loader`, then filter each
 DataFrame to a date range before passing them in) instead of running the full
 universe.
 
+## UI
+
+A Streamlit app (`app.py`) provides a browser UI over the Postgres runs-store: Runs
+(auto-refreshing list), Configure & Run (launches a real M5 backtest as a detached
+job), Compare, Scan & discovery (M9 nightly-scan results), and Campaigns (M10 cohort
+aggregation). Needs the UI extra and a running Postgres (`docker compose up -d`):
+
+```bash
+pip install -e ".[ui]"
+streamlit run app.py
+```
+
+See `IMPLEMENTATION.md`'s "M8: backtest UI" section for what's built and what's
+deliberately out of scope (e.g. no real-time/live-trading view, D1 backtests or the
+validation-study suite have no UI path yet).
+
 ## Verifying results by hand
 
 - After a backfill: `duckdb data/warehouse.duckdb` then

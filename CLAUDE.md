@@ -98,8 +98,19 @@ src/rs_spy/
 │   └── (connection, schema, repository, serialize)
 ├── jobs/                Detached backtest job runner (runner + launch) — writes results to Postgres
 │
+├── ui/                  Streamlit UI (M8) — 5 pages backed by the Postgres runs-store
+│   ├── data.py            Data layer: thin wrappers over store/*; pages call data.fn(), never SQL
+│   │                      directly — tests monkeypatch this module and never need real Postgres
+│   ├── form.py            BacktestConfigM5 field introspection -> widget specs (main/advanced split)
+│   └── pages.py           Page render functions: Runs, Configure & Run, Compare, Scan & discovery,
+│                          Campaigns — out-of-process job launch (jobs/launch.py) + `st.fragment`
+│                          5s polling, never an in-thread backtest
+│
 └── reporting/           Placeholder (empty)
 ```
+
+`app.py` (repo root, not under `src/`) is the Streamlit entry point — `st.navigation` over the five
+`ui/pages.py` functions; run it with `streamlit run app.py`.
 
 ## How to run things
 
@@ -122,6 +133,7 @@ There are **no console_scripts** — everything is a standalone Typer script:
 | `python scripts/run_tuning_sweep.py --window 18` | Tuning-campaign parameter sweep |
 | `python scripts/run_backtest_job.py --run-id <uuid>` | DB-native single run → Postgres (used by the UI/job runner) |
 | `python scripts/run_nightly_scan.py [--as-of DATE] [--no-onboard]` | Nightly universe scan + screener capture + most-active onboarding |
+| `streamlit run app.py` (needs `pip install -e ".[ui]"` + Postgres up) | **Backtest UI** — Runs / Configure & Run / Compare / Scan & discovery / Campaigns |
 
 ## Data & storage
 
