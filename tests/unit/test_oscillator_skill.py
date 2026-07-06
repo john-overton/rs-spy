@@ -145,3 +145,84 @@ def test_trigger_composition_conditions_long_triggers_on_state():
     assert bull["n"] == 1 and bull["mean_fwd_return"] == pytest.approx(0.10)
     bear = table[(table.state == "BEAR_RUN") & (table.horizon_bars == 1)].iloc[0]
     assert bear["n"] == 1
+
+
+from rs_spy.backtest.studies.oscillator_skill_m5 import (  # noqa: E402
+    HOLDOUT_MIN_STATE_N,
+    TRAIN_MIN_STATE_N,
+    candidate_grid,
+    holdout_verdict,
+    run_train_sweep,
+)
+from rs_spy.indicators.cycle_oscillator import OscSpec  # noqa: E402
+
+
+def test_candidate_grid_is_the_spec_grid():
+    grid = candidate_grid()
+    assert len(grid) == 24
+    names = {s.name for s in grid}
+    assert "close-12-26-9" in names and "vwap_dev-6-13-5" in names
+    assert all(s.input_mode in ("close", "vwap_dev") for s in grid)
+
+
+def _train_m5(n=6000):
+    # deterministic sine-trend price so states populate; volume constant
+    idx = pd.date_range("2024-01-02 14:30", periods=n, freq="5min", tz="UTC")
+    t = np.arange(n)
+    close = pd.Series(100 + 5 * np.sin(t / 60) + t * 0.001, index=idx)
+    return pd.DataFrame({"open": close, "high": close + 0.1, "low": close - 0.1,
+                         "close": close, "volume": 1000.0})
+
+
+def test_run_train_sweep_returns_summary_and_picks_eligible_max_sep24():
+    m5 = _train_m5()
+    specs = [OscSpec("close", 6, 13, 5), OscSpec("close", 12, 26, 9)]
+    results, winner = run_train_sweep(m5, specs)
+    assert set(results["name"]) == {"close-6-13-5", "close-12-26-9"}
+    assert {"sep_12", "sep_24", "sep_78", "eligible"} <= set(results.columns)
+    eligible = results[results["eligible"] == True]  # noqa: E712
+    if winner is not None:
+        top = eligible.sort_values(
+            ["sep_24", "sep_12"], ascending=False).iloc[0]
+        assert winner.name == top["name"]
+
+
+def test_run_train_sweep_uses_train_window_only():
+    # data extending past TRAIN_END must not change the result
+    m5 = _train_m5()
+    extra_idx = pd.date_range("2026-01-05 14:30", periods=500, freq="5min", tz="UTC")
+    extra = pd.DataFrame(
+        {"open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0, "volume": 1000.0},
+        index=extra_idx,
+    )
+    specs = [OscSpec("close", 6, 13, 5)]
+    r1, _ = run_train_sweep(m5, specs)
+    r2, _ = run_train_sweep(pd.concat([m5, extra]), specs)
+    assert r1.loc[0, "sep_24"] == pytest.approx(r2.loc[0, "sep_24"])
+
+
+def test_holdout_verdict_all_checks():
+    ok = holdout_verdict(
+        {"sep_12": 0.001, "sep_24": 0.002, "min_state_n": 60},
+        {"sep_24": 0.0005},
+        train_sep_24=0.003,
+    )
+    assert ok["pass"] is True and all(ok["checks"].values())
+    bad = holdout_verdict(
+        {"sep_12": 0.001, "sep_24": -0.002, "min_state_n": 60},
+        {"sep_24": 0.0005},
+        train_sep_24=0.003,
+    )
+    assert bad["pass"] is False
+    assert bad["checks"]["sep_24_pos"] is False
+    assert bad["checks"]["sign_consistent"] is False
+    thin = holdout_verdict(
+        {"sep_12": 0.001, "sep_24": 0.002, "min_state_n": 10},
+        {"sep_24": 0.0},
+        train_sep_24=0.003,
+    )
+    assert thin["pass"] is False and thin["checks"]["min_n_ok"] is False
+
+
+def test_constants():
+    assert TRAIN_MIN_STATE_N == 200 and HOLDOUT_MIN_STATE_N == 50
