@@ -71,6 +71,17 @@ def test_separation_scores_weighted_and_signed():
     assert scores["min_state_n"] == 1
 
 
+def test_min_state_n_is_per_state_per_horizon():
+    # Same state at two horizons, n=100 each: true occupancy is 100, not 200.
+    rows = [
+        {"state": "BULL_RUN", "horizon_bars": 12, "n": 100,
+         "mean_fwd_return": 0.01, "median_fwd_return": 0.01},
+        {"state": "BULL_RUN", "horizon_bars": 24, "n": 100,
+         "mean_fwd_return": 0.01, "median_fwd_return": 0.01},
+    ]
+    assert separation_scores(pd.DataFrame(rows))["min_state_n"] == 100
+
+
 def test_separation_none_when_a_side_is_empty():
     rows = [{"state": "BULL_RUN", "horizon_bars": 24, "n": 5,
              "mean_fwd_return": 0.01, "median_fwd_return": 0.01}]
