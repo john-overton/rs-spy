@@ -471,7 +471,7 @@ def separation_scores(table: pd.DataFrame) -> dict:
     """sep_h = n-weighted bull-state mean minus n-weighted bear-state mean.
 
     None when a horizon is absent or either side has zero observations.
-    min_state_n supports the eligibility floors (train >=200, holdout >=50).
+    min_state_n = smallest per-(state, horizon) n; floors bind against true occupancy (tightened in Task-2 review, c9ed9b5).
     """
     out: dict = {}
     horizons = sorted({int(h) for h in table["horizon_bars"]})
@@ -492,7 +492,7 @@ def separation_scores(table: pd.DataFrame) -> dict:
 
         bull, bear = side_mean(BULL_STATES), side_mean(BEAR_STATES)
         out[f"sep_{h}"] = None if bull is None or bear is None else bull - bear
-    out["min_state_n"] = int(table.groupby("state")["n"].sum().min()) if len(table) else 0
+    out["min_state_n"] = int(table["n"].astype(int).min()) if len(table) else 0  # per-(state,horizon) occupancy -- tightened in review (c9ed9b5), do not revert
     return out
 
 
