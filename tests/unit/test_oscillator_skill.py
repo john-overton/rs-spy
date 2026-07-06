@@ -109,3 +109,39 @@ def test_default_constants_are_the_spec_values():
     assert BULL_STATES == ("BULL_RUN", "BULL_EARLY")
     assert BEAR_STATES == ("BEAR_RUN", "BEAR_EARLY")
     assert str(TRAIN_END.date()) == "2025-01-01"
+
+
+from rs_spy.backtest.studies.oscillator_skill_m5 import (  # noqa: E402
+    incumbent_skill,
+    trigger_composition_table,
+)
+from rs_spy.bias.buckets import BULL, LONG_TRIGGER, NEUTRAL, STRONG_BEAR  # noqa: E402
+
+
+def test_incumbent_skill_scores_buckets_with_the_same_metric():
+    close = _series([100, 200, 100, 50], start="2024-01-02 14:30")
+    bias = pd.Series([BULL, NEUTRAL, STRONG_BEAR, STRONG_BEAR],
+                     index=close.index, dtype=object)
+    table, scores = incumbent_skill(bias, close, horizons=(1,))
+    bull = table[(table.state == "BULL_RUN") & (table.horizon_bars == 1)].iloc[0]
+    assert bull["n"] == 1 and bull["mean_fwd_return"] == pytest.approx(1.0)
+    # NEUTRAL bar contributes nowhere; separation keys exist only for 12/24/78,
+    # so with horizons=(1,) all sep_* are None -- the table rows are the check here.
+    assert scores["sep_24"] is None
+    bear = table[(table.state == "BEAR_RUN") & (table.horizon_bars == 1)].iloc[0]
+    assert bear["n"] == 1 and bear["mean_fwd_return"] == pytest.approx(-0.5)
+
+
+def test_trigger_composition_conditions_long_triggers_on_state():
+    close = _series([100, 110, 121, 133.1], start="2024-01-02 14:30")
+    trigger = pd.Series([LONG_TRIGGER, "NONE", LONG_TRIGGER, "NONE"],
+                        index=close.index, dtype=object)
+    states = pd.Series(["BULL_RUN", "BULL_RUN", "BEAR_RUN", "BEAR_RUN"],
+                       index=close.index, dtype=object)
+    table = trigger_composition_table(trigger, states, close, horizons=(1,))
+    allrow = table[(table.state == "ALL") & (table.horizon_bars == 1)].iloc[0]
+    assert allrow["n"] == 2
+    bull = table[(table.state == "BULL_RUN") & (table.horizon_bars == 1)].iloc[0]
+    assert bull["n"] == 1 and bull["mean_fwd_return"] == pytest.approx(0.10)
+    bear = table[(table.state == "BEAR_RUN") & (table.horizon_bars == 1)].iloc[0]
+    assert bear["n"] == 1

@@ -99,3 +99,53 @@ def cross_skill_table(
                  **_fwd_stats(fwd, crosses[event])}
             )
     return pd.DataFrame(rows, dtype=object)
+
+
+from rs_spy.bias.buckets import (  # noqa: E402
+    BULL,
+    LONG_TRIGGER,
+    STRONG_BEAR,
+    STRONG_BULL,
+)
+from rs_spy.bias.buckets import BEAR as BEAR_BUCKET  # noqa: E402
+
+INCUMBENT_BULL = (STRONG_BULL, BULL)
+INCUMBENT_BEAR = (STRONG_BEAR, BEAR_BUCKET)
+
+
+def incumbent_skill(
+    bias: pd.Series, close: pd.Series, horizons: tuple = HORIZONS
+) -> tuple[pd.DataFrame, dict]:
+    """Score the current bias engine's buckets with the oscillator's metric.
+
+    Bucket -> state mapping: bull buckets -> BULL_RUN, bear buckets -> BEAR_RUN,
+    NEUTRAL/other -> NaN (excluded). The EARLY states stay empty -- the
+    incumbent has no equivalent; separation_scores handles the n=0 sides via
+    the n-weighted means (weight 0)."""
+    mapped = pd.Series(float("nan"), index=bias.index, dtype=object)
+    mapped[bias.isin(INCUMBENT_BULL)] = "BULL_RUN"
+    mapped[bias.isin(INCUMBENT_BEAR)] = "BEAR_RUN"
+    table = state_skill_table(mapped, close, horizons)
+    return table, separation_scores(table)
+
+
+def trigger_composition_table(
+    trigger: pd.Series, states: pd.Series, close: pd.Series, horizons: tuple = HORIZONS
+) -> pd.DataFrame:
+    """Forward returns of LONG_TRIGGER events, unconditioned (ALL) and
+    conditioned on the oscillator state at the trigger bar -- the
+    decision-relevant read, since real entries need trigger-in-window
+    coincidence."""
+    is_long = trigger == LONG_TRIGGER
+    rows = []
+    for horizon in horizons:
+        fwd = close.shift(-horizon) / close - 1.0
+        rows.append(
+            {"state": "ALL", "horizon_bars": horizon, **_fwd_stats(fwd, is_long)}
+        )
+        for state in (*BULL_STATES, *BEAR_STATES):
+            rows.append(
+                {"state": state, "horizon_bars": horizon,
+                 **_fwd_stats(fwd, is_long & (states == state))}
+            )
+    return pd.DataFrame(rows, dtype=object)
