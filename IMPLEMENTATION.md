@@ -2113,10 +2113,20 @@ Full table: `reports/tuning/oscillator_skill_holdout.csv`.
    existed. Phase 2 (a `bias_mode` config switch, engine wiring, and a 500-universe campaign
    re-run vs. the M10 baseline rows — its own spec/plan) is formally unlocked, pending the
    user's morning review of this section.
-2. **But the magnitude collapsed roughly 10x out of sample**: `sep_24` went from `8.34e-5`
-   (train) to `8.6e-6` (holdout) — about 0.09 bps per 2-hour horizon, economically thin on its
-   own before any consideration of transaction costs, trigger-coincidence rates, or position
-   sizing.
+2. **But the magnitude collapsed roughly 10x out of sample, and sits inside the noise floor.**
+   `sep_24` went from `8.34e-5` (train) to `8.6e-6` (holdout) — about 0.09 bps per 2-hour
+   horizon, economically thin on its own before any consideration of transaction costs,
+   trigger-coincidence rates, or position sizing. Putting a number on that noise floor (added
+   in final-branch review): SPY's ~2h return std is ≈0.5%; with overlapping 24-bar returns the
+   effective per-side sample is ≈n/24 (adjacent 24-bar windows share 23 of 24 bars and are not
+   independent draws), which gives a rough standard error for `sep_24` of ≈3e-4. The holdout
+   `sep_24` (`8.6e-6`) is ~1/40 of that SE, and even train's `8.34e-5` sits within 1 SE — by
+   this rough estimate the result is **statistically indistinguishable from zero**. Consistent
+   with that: under a pure no-skill null, this gate is estimated to pass roughly **one time in
+   three** (`sep_12` and `sep_24` are highly correlated — same state labels, overlapping
+   windows — and the "beats incumbent" check is easy to clear by chance once the incumbent
+   itself goes negative, which is exactly what happened here; see point 5 below). **The PASS is
+   weak directional evidence, not confirmation of signal.**
 3. **`sep_78` is negative in *both* windows** (`-6.7e-5` train, `-1.28e-4` holdout) — the
    oscillator's bull/bear read inverts at the long (78-bar / ~6.5h) horizon in every window
    measured so far. The gate never required `sep_78 > 0`; this is a real, disclosed limit on
@@ -2136,6 +2146,22 @@ Full table: `reports/tuning/oscillator_skill_holdout.csv`.
    seeing holdout numbers (the driver enforces exactly one `--spec`), and the pass arrives
    with its caveats attached in the same report rather than discovered later by someone
    reading only the PASS/FAIL line.
+7. **The per-state read inverts underneath the pooled pass** (added in final-branch review).
+   On holdout, `BEAR_RUN`'s mean forward return *exceeds* `BULL_RUN`'s at both `h=12`
+   (`2.03e-4` vs. `1.59e-4`) and `h=24` (`3.33e-4` vs. `2.86e-4`) —
+   `reports/tuning/oscillator_skill_holdout.csv`. The positive pooled `sep_h` is driven by the
+   EARLY states and the n-weighting composition, not by `RUN`-state ordering. Consequence for
+   Phase 2: a naive "long only in BULL states" wiring would have selected worse bars than
+   `BEAR_RUN` bars on this holdout window; any Phase 2 design must confront the 4-state
+   composition directly, not assume bull>bear uniformly.
+8. **Grid-boundary caveat** (added in final-branch review): the winner (`close-6-13-5`) sits
+   at the fastest corner of the 24-candidate grid, and train `sep_24` increases monotonically
+   toward that corner (leaderboard in `reports/tuning/oscillator_skill_tables.md`) — the grid's
+   boundary picked the winner, not an interior optimum.
+
+**Decision tables**: the train leaderboard, winner/incumbent per-state and trigger-composition
+tables, and the holdout tables + checks + verdict are archived verbatim (with reconstructed
+sections labeled) in `reports/tuning/oscillator_skill_tables.md`.
 
 **Next step**: user review of this section and the two `docs/tuning/ledger.csv` rows
 (`m11-train-winner`, `m11-holdout-gate`); if approved, a Phase 2 spec/plan (engine wiring

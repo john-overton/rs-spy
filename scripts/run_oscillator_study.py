@@ -108,8 +108,7 @@ def holdout(spec: str = typer.Option(...)) -> None:
     chosen = grid[spec]
 
     spy_m1, spy_m5, spy_d1, qqq_m1, qqq_m5 = _load_frames()
-    _, holdout_m5 = split_train_holdout(spy_m5)
-    train_m5, _ = split_train_holdout(spy_m5)
+    train_m5, holdout_m5 = split_train_holdout(spy_m5)
 
     # train sep_24 for the sign-consistency check (recomputed, train data only)
     t_osc = compute_oscillator(train_m5, chosen)
