@@ -103,6 +103,24 @@ def test_crosses_fire_only_on_the_crossing_bar():
     assert list(crosses["zero_down"]) == [False, False, False, False, False]
 
 
+def test_no_spurious_crosses_on_first_bar():
+    # starts above signal and above zero, never crosses -> no events at all
+    idx = pd.date_range("2026-03-02 14:30", periods=4, freq="5min", tz="UTC")
+    osc = pd.DataFrame(
+        {
+            "fast_line": [1.0, 1.2, 1.1, 1.3],
+            "signal_line": [0.5, 0.6, 0.7, 0.8],
+        },
+        index=idx,
+    )
+    osc["histogram"] = osc["fast_line"] - osc["signal_line"]
+    crosses = oscillator_crosses(osc)
+    assert not crosses["bull_cross"].any()
+    assert not crosses["bear_cross"].any()
+    assert not crosses["zero_up"].any()
+    assert not crosses["zero_down"].any()
+
+
 def test_unknown_input_mode_raises():
     with pytest.raises(ValueError, match="nope"):
         compute_oscillator(_m5([100.0, 101.0]), OscSpec("nope", 2, 4, 2))

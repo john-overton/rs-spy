@@ -81,14 +81,16 @@ def oscillator_crosses(osc: pd.DataFrame) -> pd.DataFrame:
     """True only on the crossing bar."""
     fast, signal = osc["fast_line"], osc["signal_line"]
     above = fast > signal
-    above_prev = above.shift(1).fillna(False).astype(bool)
+    above_prev = above.shift(1)  # NaN on the first bar: prior state undefined
     pos = fast > 0
-    pos_prev = pos.shift(1).fillna(False).astype(bool)
+    pos_prev = pos.shift(1)
+    # `== True` / `== False` (not fillna) so an undefined prior state can never
+    # register a cross: NaN compares False on both sides.
     return pd.DataFrame(
         {
-            "bull_cross": above & ~above_prev,
-            "bear_cross": ~above & above_prev,
-            "zero_up": pos & ~pos_prev,
-            "zero_down": ~pos & pos_prev,
+            "bull_cross": above & (above_prev == False),  # noqa: E712
+            "bear_cross": ~above & (above_prev == True),  # noqa: E712
+            "zero_up": pos & (pos_prev == False),  # noqa: E712
+            "zero_down": ~pos & (pos_prev == True),  # noqa: E712
         }
     )
