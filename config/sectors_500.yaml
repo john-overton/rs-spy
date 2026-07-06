@@ -1,0 +1,374 @@
+_source: nasdaq-screener 2026-07-05 (one-shot; yfinance blocked by Yahoo 401 -- see
+  docstring)
+sectors:
+  A: Industrials
+  AA: Industrials
+  AAL: Consumer Discretionary
+  AAOI: Technology
+  ABNB: Consumer Discretionary
+  ACN: Consumer Discretionary
+  ADP: Industrials
+  ADSK: Technology
+  AEIS: Technology
+  AEM: Basic Materials
+  AFRM: Finance
+  AGI: Basic Materials
+  AJG: Finance
+  AKAM: Consumer Discretionary
+  ALB: Industrials
+  ALL: Finance
+  ALNY: Health Care
+  AMAT: Technology
+  AMKR: Technology
+  ANET: Telecommunications
+  AON: Finance
+  APH: Technology
+  APO: Finance
+  APP: Technology
+  AR: Energy
+  ARES: Finance
+  ARGX: Health Care
+  ASML: Technology
+  ASTS: Consumer Discretionary
+  ASX: Technology
+  ATI: Industrials
+  AU: Basic Materials
+  AXON: Industrials
+  AXTI: Technology
+  AZN: Health Care
+  B: Basic Materials
+  BABA: Consumer Discretionary
+  BB: Technology
+  BDX: Health Care
+  BE: Energy
+  BEN: Finance
+  BG: Consumer Staples
+  BHP: Energy
+  BKR: Consumer Discretionary
+  BNY: Finance
+  BP: Energy
+  BSX: Health Care
+  BTI: Health Care
+  BURL: Consumer Discretionary
+  BX: Finance
+  CAH: Health Care
+  CARR: Industrials
+  CASY: Consumer Discretionary
+  CB: Finance
+  CCI: Real Estate
+  CCJ: Basic Materials
+  CCL: Consumer Discretionary
+  CDE: Basic Materials
+  CDNS: Technology
+  CDW: Technology
+  CF: Industrials
+  CFG: Finance
+  CHRW: Industrials
+  CI: Health Care
+  CIEN: Utilities
+  CIFR: Finance
+  CLS: Technology
+  CLSK: Finance
+  CME: Finance
+  CMG: Consumer Discretionary
+  CMI: Industrials
+  CMS: Utilities
+  CNC: Health Care
+  CNP: Utilities
+  CNQ: Energy
+  COHR: Technology
+  COIN: Finance
+  COO: Health Care
+  COR: Health Care
+  CORZ: Finance
+  CPAY: Consumer Discretionary
+  CPB: Consumer Staples
+  CPNG: Consumer Discretionary
+  CPRT: Consumer Discretionary
+  CRH: Industrials
+  CRS: Industrials
+  CRWD: Technology
+  CSX: Industrials
+  CTAS: Industrials
+  CTSH: Technology
+  CTVA: Consumer Staples
+  CVE: Energy
+  CVNA: Consumer Discretionary
+  DAL: Consumer Discretionary
+  DASH: Technology
+  DDOG: Technology
+  DELL: Technology
+  DG: Consumer Discretionary
+  DHI: Consumer Discretionary
+  DKNG: Consumer Discretionary
+  DKS: Consumer Discretionary
+  DLTR: Consumer Discretionary
+  DOCN: Technology
+  DOW: Industrials
+  DPZ: Consumer Discretionary
+  DRI: Consumer Discretionary
+  DT: Technology
+  DVN: Energy
+  DXCM: Health Care
+  EBAY: Consumer Discretionary
+  ECHO: Consumer Discretionary
+  EFX: Finance
+  EL: Consumer Discretionary
+  ELV: Health Care
+  ENPH: Technology
+  ENTG: Industrials
+  EQT: Energy
+  ETN: Technology
+  ETR: Utilities
+  EW: Health Care
+  EXE: Energy
+  EXPE: Consumer Discretionary
+  FANG: Energy
+  FAST: Consumer Discretionary
+  FE: Utilities
+  FERG: Miscellaneous
+  FIS: Consumer Discretionary
+  FISV: Consumer Discretionary
+  FITB: Finance
+  FIVE: Consumer Discretionary
+  FLEX: Technology
+  FN: Utilities
+  FNV: Basic Materials
+  FOXA: Industrials
+  FSLR: Technology
+  FTAI: Industrials
+  FTI: Consumer Discretionary
+  FTNT: Technology
+  GD: Industrials
+  GH: Health Care
+  GLW: Industrials
+  GNRC: Consumer Discretionary
+  GOOG: Technology
+  GSK: Health Care
+  GTLS: Industrials
+  GWRE: Technology
+  H: Consumer Discretionary
+  HAL: Energy
+  HBAN: Finance
+  HCA: Health Care
+  HDB: Finance
+  HIMS: Health Care
+  HL: Industrials
+  HLT: Consumer Discretionary
+  HPE: Technology
+  HPQ: Technology
+  HST: Real Estate
+  HSY: Consumer Staples
+  HUBB: Technology
+  HUBS: Technology
+  HUM: Health Care
+  HUT: Finance
+  HWM: Industrials
+  IBKR: Finance
+  IBN: Finance
+  ICE: Finance
+  ICLR: Health Care
+  ILMN: Health Care
+  INFY: Technology
+  INSM: Health Care
+  IONQ: Technology
+  IP: Basic Materials
+  IQV: Health Care
+  IR: Industrials
+  ITW: Industrials
+  JBHT: Industrials
+  JBL: Technology
+  JCI: Industrials
+  JD: Consumer Discretionary
+  JHX: Industrials
+  JKHY: Technology
+  KDP: Consumer Staples
+  KEY: Finance
+  KEYS: Industrials
+  KGC: Basic Materials
+  KHC: Consumer Staples
+  KKR: Finance
+  KMI: Utilities
+  KNX: Industrials
+  KR: Consumer Staples
+  LEN: Consumer Discretionary
+  LHX: Industrials
+  LITE: Telecommunications
+  LNG: Utilities
+  LPLA: Finance
+  LSCC: Technology
+  LULU: Consumer Discretionary
+  LUV: Consumer Discretionary
+  LYB: Industrials
+  LYV: Consumer Discretionary
+  MA: Consumer Discretionary
+  MARA: Technology
+  MCHP: Technology
+  MCK: Health Care
+  MCO: Finance
+  MDB: Technology
+  MKSI: Industrials
+  MLM: Industrials
+  MNST: Consumer Staples
+  MO: Health Care
+  MOD: Consumer Discretionary
+  MOH: Health Care
+  MOS: Industrials
+  MPWR: Technology
+  MRNA: Health Care
+  MRSH: Finance
+  MRVL: Technology
+  MSCI: Consumer Discretionary
+  MSI: Technology
+  MSTR: Technology
+  MTSI: Technology
+  MTZ: Industrials
+  MXL: Technology
+  NBIS: Technology
+  NCLH: Consumer Discretionary
+  NDAQ: Finance
+  NET: Technology
+  NI: Utilities
+  NOC: Industrials
+  NOK: Technology
+  NRG: Utilities
+  NTAP: Technology
+  NTRA: Health Care
+  NUE: Industrials
+  NVO: Health Care
+  NVS: Health Care
+  NVT: Industrials
+  NVTS: Technology
+  NXPI: Technology
+  OC: Industrials
+  ODFL: Industrials
+  OKTA: Technology
+  'ON': Technology
+  ONTO: Industrials
+  ORLY: Consumer Discretionary
+  PATH: Technology
+  PAYX: Industrials
+  PBR: Energy
+  PCAR: Consumer Discretionary
+  PCG: Utilities
+  PDD: Technology
+  PGR: Finance
+  PH: Industrials
+  PINS: Technology
+  PL: Technology
+  PLTR: Technology
+  PM: Health Care
+  PODD: Health Care
+  PPL: Utilities
+  PR: Energy
+  PRIM: Industrials
+  PTC: Technology
+  PWR: Industrials
+  PYPL: Industrials
+  QBTS: Technology
+  QXO: Consumer Discretionary
+  RBLX: Technology
+  RCL: Consumer Discretionary
+  RDW: Industrials
+  REGN: Health Care
+  RF: Finance
+  RGTI: Technology
+  RIO: Basic Materials
+  RIOT: Finance
+  RKLB: Industrials
+  RKT: Finance
+  RL: Industrials
+  RMBS: Technology
+  ROK: Industrials
+  ROKU: Telecommunications
+  ROL: Consumer Discretionary
+  ROP: Technology
+  RRX: Consumer Discretionary
+  RSG: Utilities
+  RVMD: Health Care
+  RY: Finance
+  SAP: Technology
+  SE: Consumer Discretionary
+  SHOP: Technology
+  SIMO: Technology
+  SMCI: Technology
+  SMTC: Technology
+  SNOW: Technology
+  SNPS: Technology
+  SNX: Technology
+  SOFI: Finance
+  SPCX: Technology
+  SPGI: Finance
+  SPOT: Consumer Discretionary
+  STLD: Industrials
+  STM: Technology
+  STRL: Industrials
+  STT: Finance
+  STX: Technology
+  SU: Energy
+  SW: Consumer Discretionary
+  SWKS: Technology
+  SYF: Finance
+  SYK: Health Care
+  SYY: Consumer Discretionary
+  TEAM: Technology
+  TECH: Health Care
+  TECK: Industrials
+  TEL: Technology
+  TER: Industrials
+  TEVA: Health Care
+  TKO: Consumer Discretionary
+  TPR: Consumer Discretionary
+  TRGP: Utilities
+  TRV: Finance
+  TSCO: Consumer Discretionary
+  TSEM: Technology
+  TSM: Technology
+  TT: Industrials
+  TTD: Technology
+  TTMI: Technology
+  TWLO: Technology
+  TXRH: Consumer Discretionary
+  TYL: Technology
+  U: Technology
+  UAL: Consumer Discretionary
+  UBER: Consumer Discretionary
+  UDR: Real Estate
+  UL: Consumer Discretionary
+  ULTA: Consumer Discretionary
+  UMC: Technology
+  USFD: Consumer Discretionary
+  V: Consumer Discretionary
+  VALE: Basic Materials
+  VEEV: Technology
+  VIAV: Technology
+  VICI: Real Estate
+  VLO: Energy
+  VMC: Industrials
+  VRSK: Industrials
+  VRT: Technology
+  VRTX: Health Care
+  VSH: Technology
+  VST: Utilities
+  VTR: Real Estate
+  W: Consumer Discretionary
+  WAT: Industrials
+  WBS: Finance
+  WCC: Consumer Discretionary
+  WCN: Utilities
+  WDAY: Technology
+  WDC: Technology
+  WELL: Real Estate
+  WM: Utilities
+  WMB: Utilities
+  WPM: Basic Materials
+  WSM: Consumer Discretionary
+  WST: Health Care
+  WULF: Technology
+  WWD: Energy
+  XEL: Utilities
+  XPO: Consumer Discretionary
+  XYZ: Technology
+  ZM: Technology
+  ZS: Technology
+  ZTS: Health Care
