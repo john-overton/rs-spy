@@ -147,8 +147,10 @@ def poll_and_launch(
     forever and this loop would otherwise wait on it indefinitely. launch()
     returns the subprocess.Popen; each poll also checks whether a still-
     non-terminal run's process has already exited (`popen.poll() is not
-    None`) and, if so, calls mark_failed itself and treats the run as
-    terminal -- freeing the slot instead of hanging."""
+    None`) and, if so, re-fetches the status (a job may have saved
+    'succeeded' and exited between the first status read and popen.poll())
+    and calls mark_failed only if the run is still non-terminal -- freeing
+    the slot instead of hanging, without clobbering a just-finished run."""
     pending = list(run_ids)
     live: list[uuid.UUID] = []
     popens: dict[uuid.UUID, object] = {}
@@ -163,11 +165,20 @@ def poll_and_launch(
             popen = popens.get(rid)
             returncode = popen.poll() if popen is not None else None
             if returncode is not None:
-                mark_failed(
-                    conn, rid,
-                    f"job process exited before reporting status (exit code {returncode})",
-                )
-                final[rid] = "failed"
+                # Race guard: status was read BEFORE popen.poll(), so a job
+                # that saved 'succeeded' and exited between those two calls
+                # would look like a dead 'queued' run here. Re-fetch once and
+                # only fail the run if it is STILL non-terminal.
+                status = (get_run(conn, rid) or {}).get("status", "failed")
+                if status in TERMINAL:
+                    final[rid] = status
+                else:
+                    mark_failed(
+                        conn, rid,
+                        f"job process exited before reporting status "
+                        f"(exit code {returncode})",
+                    )
+                    final[rid] = "failed"
                 continue
             still_live.append(rid)
         live = still_live

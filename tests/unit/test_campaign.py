@@ -247,6 +247,27 @@ def test_poll_and_launch_marks_failed_when_process_exits_before_reporting_status
     assert "exit code 1" in mark_failed_calls[0][2]
 
 
+def test_poll_and_launch_rechecks_status_before_failing_a_dead_process_run():
+    # Race: the loop reads status BEFORE popen.poll(). A job that saves
+    # 'succeeded' and exits between those two calls looks like status='queued'
+    # + dead process -- an unconditional mark_failed would clobber the freshly
+    # written 'succeeded'. poll_and_launch must re-fetch status once and only
+    # fail the run if it is STILL non-terminal.
+    rid = uuid.uuid4()
+    statuses = iter(["queued", "succeeded"])  # first read stale, re-fetch fresh
+    mark_failed_calls = []
+
+    out = poll_and_launch(
+        conn="conn", run_ids=[rid], max_parallel=1, poll_seconds=0,
+        launch=lambda r: _FakePopen(0),
+        sleep=lambda s: None,
+        get_run=lambda c, r: {"status": next(statuses)},
+        mark_failed=lambda c, r, e: mark_failed_calls.append((r, e)),
+    )
+    assert out[rid] == "succeeded"
+    assert mark_failed_calls == []
+
+
 def test_poll_and_launch_reports_failed_runs_without_hanging():
     rid = uuid.uuid4()
     state = {rid: "queued"}
