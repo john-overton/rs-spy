@@ -259,3 +259,28 @@ def test_campaigns_page_aggregates_complete_campaigns(monkeypatch):
     at.run()
     assert not at.exception
     assert len(at.dataframe) >= 2   # groups table + pooled metrics table
+
+
+def test_campaigns_page_handles_slash_in_tag(monkeypatch):
+    # parse_campaign_label's tag group is unrestricted (.+), so a tag may itself
+    # contain "/" — the pick round-trip must not crash or mis-split.
+    monkeypatch.setattr(data, "get_conn", lambda: None)
+    monkeypatch.setattr(data, "campaign_groups", lambda conn: pd.DataFrame(
+        [{"tag": "q1/26", "variant": "baseline", "n_cohorts": 2,
+          "statuses": ["succeeded"]}]))
+    import rs_spy.ui.pages as pages_mod
+    seen = []
+    monkeypatch.setattr(pages_mod, "aggregate_campaign", lambda conn, tag, variant: (
+        seen.append((tag, variant)) or {
+            "n_runs": 2,
+            "trades": pd.DataFrame({"symbol": ["AAPL"], "pnl": [10.0]}),
+            "equity": None,
+            "metrics": {"n_trades": 20, "profit_factor": 2.0},
+        }))
+    at = AppTest.from_function(_run_campaigns_page)
+    at.run()
+    at.selectbox(key="campaign_pick").set_value("q1/26 / baseline")
+    at.run()
+    assert not at.exception
+    assert seen == [("q1/26", "baseline")]
+    assert len(at.dataframe) >= 2   # groups table + pooled metrics table

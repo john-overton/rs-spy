@@ -215,7 +215,10 @@ def campaigns_page() -> None:
     pick = st.selectbox("Campaign", ["(choose)"] + options, key="campaign_pick")
     if pick == "(choose)":
         return
-    tag, variant = (s.strip() for s in pick.split("/"))
+    # rsplit on the last " / ": variants are [A-Za-z0-9_]+ (no slashes/spaces),
+    # but tags are unrestricted and may themselves contain "/".
+    tag, variant = pick.rsplit(" / ", 1)
+    tag, variant = tag.strip(), variant.strip()
     row = groups[(groups["tag"] == tag) & (groups["variant"] == variant)].iloc[0]
 
     if row["statuses"] != ["succeeded"]:
