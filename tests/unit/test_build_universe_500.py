@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from rs_spy.data.warehouse import connect
+from rs_spy.scan.universe500 import unknown_fraction
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "build_universe_500.py"
 spec = importlib.util.spec_from_file_location("build_universe_500", SCRIPT)
@@ -64,3 +65,29 @@ def test_latest_scan_date_accepts_fresh_and_refuses_stale():
         builder.latest_scan_date(_FakeConn(date.today() - timedelta(days=10)))
     with pytest.raises(builder.StaleScanError):
         builder.latest_scan_date(_FakeConn(None))
+
+
+def _doc(curated_count, topup_sectors):
+    """A build_universe_yaml-shaped doc: `curated_count` curated entries
+    (never UNKNOWN) followed by one top-up entry per sector in `topup_sectors`."""
+    universe = (
+        [{"symbol": f"CUR{i}", "sector": "Technology"} for i in range(curated_count)]
+        + [{"symbol": f"TOP{i}", "sector": s} for i, s in enumerate(topup_sectors)]
+    )
+    return {"benchmarks": [], "universe": universe}
+
+
+def test_unknown_fraction_counts_only_topup_entries():
+    doc = _doc(curated_count=2, topup_sectors=["UNKNOWN", "Technology", "UNKNOWN", "Financials"])
+    # 2 of 4 top-up entries UNKNOWN; curated prefix excluded from the count.
+    assert unknown_fraction(doc, curated_count=2) == 0.5
+
+
+def test_unknown_fraction_all_known_is_zero():
+    doc = _doc(curated_count=1, topup_sectors=["Technology", "Financials"])
+    assert unknown_fraction(doc, curated_count=1) == 0.0
+
+
+def test_unknown_fraction_no_topup_entries_is_zero():
+    doc = _doc(curated_count=3, topup_sectors=[])
+    assert unknown_fraction(doc, curated_count=3) == 0.0

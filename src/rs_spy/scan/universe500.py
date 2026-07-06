@@ -37,6 +37,18 @@ def select_topup(
     return ranked["symbol"].head(n_needed).tolist()
 
 
+def unknown_fraction(doc: dict, curated_count: int) -> float:
+    """Fraction of TOP-UP entries (doc["universe"] entries after the curated
+    prefix) with sector == "UNKNOWN". Excludes the curated prefix, which is
+    hand-labeled and never UNKNOWN. Used by build_universe_500.py to refuse a
+    silent mass-UNKNOWN output when sector enrichment hasn't been run."""
+    topup_entries = doc["universe"][curated_count:]
+    if not topup_entries:
+        return 0.0
+    n_unknown = sum(1 for e in topup_entries if e["sector"] == "UNKNOWN")
+    return n_unknown / len(topup_entries)
+
+
 def build_universe_yaml(
     curated_universe: Universe, topup: list[str], sectors: dict[str, str]
 ) -> dict:

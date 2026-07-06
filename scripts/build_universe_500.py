@@ -17,7 +17,12 @@ import yaml
 
 from rs_spy.config import get_settings
 from rs_spy.scan.bars import connect_scan
-from rs_spy.scan.universe500 import TARGET_SIZE, build_universe_yaml, select_topup
+from rs_spy.scan.universe500 import (
+    TARGET_SIZE,
+    build_universe_yaml,
+    select_topup,
+    unknown_fraction,
+)
 from rs_spy.store.connection import connect_pg
 from rs_spy.store.scan_repository import get_universe_snapshot
 from rs_spy.universe import load_universe
@@ -25,6 +30,7 @@ from rs_spy.universe import load_universe
 app = typer.Typer()
 
 MAX_SCAN_AGE_DAYS = 7
+MAX_UNKNOWN_FRACTION = 0.10
 
 
 class StaleScanError(RuntimeError):
@@ -56,7 +62,13 @@ def first_daily_bars(con, symbols: list[str]) -> dict[str, pd.Timestamp]:
 
 
 @app.command()
-def main(target: int = TARGET_SIZE) -> None:
+def main(
+    target: int = TARGET_SIZE,
+    allow_unknown: bool = typer.Option(
+        False, "--allow-unknown",
+        help="skip the refusal when >10% of top-up symbols have UNKNOWN sector",
+    ),
+) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
     curated = load_universe(settings.config_dir / "universe.yaml")
@@ -83,6 +95,16 @@ def main(target: int = TARGET_SIZE) -> None:
 
     topup = select_topup(snapshot, first_bar, curated.trade_symbols, target=target)
     doc = build_universe_yaml(curated, topup, sectors)
+
+    frac = unknown_fraction(doc, curated_count=len(curated.trade_symbols))
+    if frac > MAX_UNKNOWN_FRACTION and not allow_unknown:
+        n_unknown = round(frac * len(topup))
+        typer.echo(
+            f"refusing: {n_unknown}/{len(topup)} top-up symbols ({frac:.0%}) have "
+            f"UNKNOWN sector, above the {MAX_UNKNOWN_FRACTION:.0%} threshold -- run "
+            f"scripts/enrich_sectors.py first, or pass --allow-unknown to override"
+        )
+        raise typer.Exit(code=1)
 
     out = settings.config_dir / "universe_500.yaml"
     header = (
